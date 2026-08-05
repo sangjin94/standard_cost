@@ -4,10 +4,10 @@ from flask import (
     Flask, render_template, request, redirect, url_for, flash
 )
 from models import (
-    db, SystemConfig, WorkCostProcess, VehicleCost, StorageCenter, StandardQuote
+    db, SystemConfig, WorkCostProcess, StorageCenter, StandardQuote
 )
 from quote_calc import (
-    work_cost_breakdown, transport_cost_breakdown, storage_cost_breakdown,
+    work_cost_breakdown, storage_cost_breakdown,
     final_price, scenario_table,
 )
 import delivery_link
@@ -39,16 +39,6 @@ DEFAULT_WORK_PROCESSES = [
     ('출고 상차',      'PLT', 20,  12000, 4),
 ]
 
-# 기본 차량 원가 (운송비 마스터가 비어 있으면 자동 삽입 — 개략 기준값, 실제 값으로 수정 필요)
-DEFAULT_VEHICLES = [
-    # (차종, 월 고정비, km당 변동비, 1일 km, 최대 PLT, 적재율%, 1일 회전, 월 운행일, 정렬)
-    ('1톤',   4200000, 350, 150, 1,  80, 2.0, 24, 0),
-    ('2.5톤', 4800000, 420, 180, 3,  80, 1.5, 24, 1),
-    ('3.5톤', 5200000, 480, 200, 4,  80, 1.5, 24, 2),
-    ('5톤',   5800000, 550, 220, 10, 80, 1.0, 24, 3),
-    ('11톤',  7500000, 700, 300, 18, 80, 1.0, 24, 4),
-]
-
 with app.app_context():
     db.create_all()
     with db.engine.connect() as _conn:
@@ -65,12 +55,6 @@ with app.app_context():
             db.session.add(WorkCostProcess(
                 process_name=pn, unit=u, productivity_per_hour=prod,
                 hourly_wage=wage, sort_order=so))
-    if VehicleCost.query.count() == 0:
-        for vt, fx, vk, km, mp, lf, tr, wd, so in DEFAULT_VEHICLES:
-            db.session.add(VehicleCost(
-                vehicle_type=vt, monthly_fixed=fx, variable_per_km=vk, km_per_day=km,
-                max_plt=mp, load_factor=lf, trips_per_day=tr, working_days=wd,
-                sort_order=so, memo='기본값 — 실제 원가로 수정 필요'))
     db.session.commit()
 
 
@@ -92,7 +76,6 @@ def _cfg_str(key, default=''):
 @app.route('/')
 def quote_page():
     storage_rows = StorageCenter.query.order_by(StorageCenter.center_name).all()
-    vehicles = VehicleCost.query.order_by(VehicleCost.sort_order, VehicleCost.id).all()
 
     # ── 배송비 단가 시스템 연동 (고객사 목록) ────────────────────────────────
     dp_dir = _cfg_str('delivery_pricing_dir')
@@ -118,8 +101,7 @@ def quote_page():
     if margin_rate is None:
         margin_rate = _cfg_float('quote_margin_rate', 10)
     center_name = request.args.get('center_name', '').strip()
-    vehicle_type = request.args.get('vehicle_type', '').strip()
-    delivery_override = request.args.get('delivery_override', type=float)  # 박스당 운송비 직접 입력 (선택)
+    delivery_override = request.args.get('delivery_override', type=float)  # 박스당 배송비 직접 입력 (선택)
     link_cid = request.args.get('link_customer_id', type=int)
     price_mode = request.args.get('mode', 'min')
     if price_mode not in ('min', 'max'):
@@ -148,14 +130,14 @@ def quote_page():
         biz_days = 22.0
 
     ctx = {
-        'storage_rows': storage_rows, 'vehicles': vehicles,
+        'storage_rows': storage_rows,
         'link_customers': link_customers, 'link_error': link_error,
         'link_cid': link_cid, 'link_summary': link_summary, 'price_mode': price_mode,
         'customer_name': customer_name, 'monthly_boxes': monthly_boxes,
         'boxes_per_plt': boxes_per_plt, 'biz_days': biz_days,
         'turnover_days': turnover_days, 'admin_rate': admin_rate,
         'margin_rate': margin_rate, 'center_name': center_name,
-        'vehicle_type': vehicle_type, 'delivery_override': delivery_override,
+        'delivery_override': delivery_override,
         'computed': False,
         'saved_quotes': StandardQuote.query.order_by(StandardQuote.created_at.desc()).limit(50).all(),
     }
@@ -170,9 +152,7 @@ def quote_page():
     processes = WorkCostProcess.query.order_by(WorkCostProcess.sort_order, WorkCostProcess.id).all()
     work_cpb, work_detail, work_direct = work_cost_breakdown(processes, boxes_per_plt, overhead_rate)
 
-    # ── 물류비 우선순위: 직접입력 > 배송단가 시스템 연동 > 차량 원가 계산 ────
-    vehicle = VehicleCost.query.filter_by(vehicle_type=vehicle_type).first() if vehicle_type else None
-    transport = transport_cost_breakdown(vehicle, boxes_per_plt)
+    # ── 물류비: 직접입력 > 배송단가 시스템 연동 (그대로 사용) ────────────────
     link_delivery = link_summary.get('delivery') if link_summary else None
     if delivery_override is not None:
         delivery_cpb = delivery_override
@@ -180,9 +160,6 @@ def quote_page():
     elif link_delivery:
         delivery_cpb = link_delivery['cpb_min'] if price_mode == 'min' else link_delivery['cpb_max']
         delivery_source = f"연동: {link_summary['customer_name']} ({'최소' if price_mode == 'min' else '최대'})"
-    elif vehicle:
-        delivery_cpb = transport['cost_per_box']
-        delivery_source = f'차량원가: {vehicle.vehicle_type}'
     else:
         delivery_cpb = 0.0
         delivery_source = '미지정'
@@ -192,26 +169,15 @@ def quote_page():
 
     fp = final_price(work_cpb, delivery_cpb, storage['cost_per_box'],
                      admin_rate, margin_rate, boxes_per_plt)
-    # 물류비가 차량 원가 계산일 때만 시나리오에서 적재율을 흔들고, 그 외에는 고정값 사용
-    scenario_vehicle = vehicle if delivery_source.startswith('차량원가') else None
     scenarios = scenario_table(processes, boxes_per_plt, overhead_rate,
-                               scenario_vehicle,
                                storage_center, avg_stock_plt, monthly_boxes,
-                               admin_rate, margin_rate)
-    if scenario_vehicle is None:
-        for s in scenarios:
-            s['transport_cpb'] = delivery_cpb
-            refp = final_price(s['work_cpb'], delivery_cpb, s['storage_cpb'],
-                               admin_rate, margin_rate, boxes_per_plt)
-            s['final_cpb'] = refp['final_cpb']
-            s['final_cpp'] = refp['final_cpp']
+                               delivery_cpb, admin_rate, margin_rate)
 
     ctx.update({
         'computed': True,
         'monthly_plt': monthly_plt, 'daily_plt': daily_plt, 'avg_stock_plt': avg_stock_plt,
         'overhead_rate': overhead_rate,
         'work_cpb': work_cpb, 'work_detail': work_detail, 'work_direct': work_direct,
-        'vehicle': vehicle, 'transport': transport,
         'delivery_cpb': delivery_cpb, 'delivery_source': delivery_source,
         'link_delivery': link_delivery,
         'storage_center': storage_center, 'storage': storage,
@@ -227,7 +193,6 @@ def quote_save():
             quote_name=request.form.get('quote_name', '').strip() or f"견적 {datetime.now():%Y-%m-%d %H:%M}",
             customer_name=request.form.get('customer_name', '').strip(),
             center_name=request.form.get('center_name') or None,
-            vehicle_type=request.form.get('vehicle_type') or None,
             monthly_boxes=float(request.form.get('monthly_boxes') or 0),
             boxes_per_plt=float(request.form.get('boxes_per_plt') or 0),
             biz_days=float(request.form.get('biz_days') or 0),
@@ -353,67 +318,50 @@ def work_cost_config():
     return redirect(url_for('work_cost_master'))
 
 
-# ─── 운송비(물류비) 마스터 ────────────────────────────────────────────────────
+# ─── 물류비 (배송단가 시스템 연동) ────────────────────────────────────────────
 
-@app.route('/masters/vehicle-cost')
-def vehicle_cost_master():
-    vehicles = VehicleCost.query.order_by(VehicleCost.sort_order, VehicleCost.id).all()
-    return render_template('vehicle_cost.html', vehicles=vehicles)
+@app.route('/masters/delivery-link')
+def delivery_master():
+    dp_dir = _cfg_str('delivery_pricing_dir')
+    refresh = request.args.get('refresh') == '1'
+    sel_cid = request.args.get('customer_id', type=int)
 
+    customers, summary, link_error = [], None, None
+    if dp_dir and os.path.isdir(dp_dir):
+        try:
+            customers = delivery_link.list_customers(dp_dir, refresh=refresh)
+        except Exception as e:
+            link_error = f'배송단가 시스템 연동 실패: {e}'
+        if sel_cid and not link_error:
+            try:
+                summary = delivery_link.get_summary(dp_dir, sel_cid, refresh=refresh)
+            except Exception as e:
+                link_error = f'배송단가 조회 실패: {e}'
+    elif dp_dir:
+        link_error = f'배송단가 시스템 폴더를 찾을 수 없습니다: {dp_dir}'
+    else:
+        link_error = '배송단가 시스템 폴더 경로가 설정되지 않았습니다.'
 
-@app.route('/masters/vehicle-cost/add', methods=['POST'])
-def vehicle_cost_add():
-    vt = request.form.get('vehicle_type', '').strip()
-
-    def _num(key, default='0'):
-        return float((request.form.get(key, default) or default).replace(',', '').strip() or default)
-
-    if not vt:
-        flash('차종을 입력해주세요.', 'danger')
-        return redirect(url_for('vehicle_cost_master'))
-    try:
-        fx = int(_num('monthly_fixed'))
-        vk = int(_num('variable_per_km'))
-        km = _num('km_per_day')
-        mp = _num('max_plt')
-        lf = _num('load_factor', '80')
-        tr = _num('trips_per_day', '1')
-        wd = _num('working_days', '24')
-        memo = request.form.get('memo', '').strip()
-        if mp <= 0 or not (0 < lf <= 100) or tr <= 0 or wd <= 0:
-            raise ValueError('적재 PLT·회전수·운행일수는 0보다 크고, 적재율은 0~100% 사이여야 합니다.')
-        existing = VehicleCost.query.filter_by(vehicle_type=vt).first()
-        if existing:
-            existing.monthly_fixed = fx
-            existing.variable_per_km = vk
-            existing.km_per_day = km
-            existing.max_plt = mp
-            existing.load_factor = lf
-            existing.trips_per_day = tr
-            existing.working_days = wd
-            existing.memo = memo
-            flash(f'[{vt}] 차량 원가가 업데이트되었습니다.', 'success')
-        else:
-            max_so = db.session.query(db.func.max(VehicleCost.sort_order)).scalar() or 0
-            db.session.add(VehicleCost(
-                vehicle_type=vt, monthly_fixed=fx, variable_per_km=vk, km_per_day=km,
-                max_plt=mp, load_factor=lf, trips_per_day=tr, working_days=wd,
-                memo=memo, sort_order=max_so + 1))
-            flash(f'[{vt}] 차량 원가가 추가되었습니다.', 'success')
-        db.session.commit()
-    except Exception as e:
-        flash(f'오류: {e}', 'danger')
-    return redirect(url_for('vehicle_cost_master'))
+    return render_template('delivery_master.html',
+                           dp_dir=dp_dir, customers=customers,
+                           sel_cid=sel_cid, summary=summary, link_error=link_error)
 
 
-@app.route('/masters/vehicle-cost/<int:vid>/delete', methods=['POST'])
-def vehicle_cost_delete(vid):
-    v = VehicleCost.query.get_or_404(vid)
-    vt = v.vehicle_type
-    db.session.delete(v)
+@app.route('/masters/delivery-link/config', methods=['POST'])
+def delivery_master_config():
+    val = request.form.get('dp_dir', '').strip()
+    if not val:
+        flash('폴더 경로를 입력해주세요.', 'danger')
+        return redirect(url_for('delivery_master'))
+    cfg = SystemConfig.query.filter_by(key='delivery_pricing_dir').first()
+    if cfg:
+        cfg.value = val
+    else:
+        db.session.add(SystemConfig(key='delivery_pricing_dir', value=val,
+                                    description='배송비 단가 시스템(delivery_pricing) 폴더 경로 — 물류비 연동에 사용'))
     db.session.commit()
-    flash(f'[{vt}] 차량 원가가 삭제되었습니다.', 'warning')
-    return redirect(url_for('vehicle_cost_master'))
+    flash('배송단가 시스템 경로가 저장되었습니다.', 'success')
+    return redirect(url_for('delivery_master'))
 
 
 # ─── 보관비 마스터 ────────────────────────────────────────────────────────────

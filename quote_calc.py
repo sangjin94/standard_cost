@@ -37,22 +37,6 @@ def work_cost_breakdown(processes, boxes_per_plt, overhead_rate=0.0):
     return total_with_overhead, detail, direct_total
 
 
-def transport_cost_breakdown(vehicle, boxes_per_plt):
-    """운송비: 대당 월 운행원가 ÷ 월 운송 PLT → PLT당 → 박스당.
-
-    vehicle : VehicleCost (None 가능)
-    """
-    if not vehicle:
-        return {'monthly_cost': 0, 'monthly_plt': 0, 'cost_per_plt': 0, 'cost_per_box': 0}
-    cpp = vehicle.cost_per_plt
-    return {
-        'monthly_cost': vehicle.monthly_cost,
-        'monthly_plt': vehicle.monthly_plt,
-        'cost_per_plt': cpp,
-        'cost_per_box': cpp / boxes_per_plt if boxes_per_plt and boxes_per_plt > 0 else 0,
-    }
-
-
 def storage_cost_breakdown(storage_center, avg_stock_plt, monthly_boxes):
     """보관비: PLT/월 단가 × 평균 재고 PLT ÷ 월 출고 박스 = 박스당 보관비.
 
@@ -92,17 +76,18 @@ def final_price(work_cpb, delivery_cpb, storage_cpb, admin_rate, margin_rate, bo
 
 
 def scenario_table(processes, boxes_per_plt, overhead_rate,
-                   vehicle, storage_center, avg_stock_plt, monthly_boxes,
-                   admin_rate, margin_rate):
-    """민감도 시나리오: 생산성 · 적재율 · 보관가동률 전제를 ±10% 흔들었을 때 최종 단가 비교.
+                   storage_center, avg_stock_plt, monthly_boxes,
+                   delivery_cpb, admin_rate, margin_rate):
+    """민감도 시나리오: 생산성 · 보관가동률 전제를 ±10% 흔들었을 때 최종 단가 비교.
 
     견적이 틀어지는 주원인은 원가 자체보다 '처리량·가동률 전제'이므로 분모를 흔들어 본다.
+    물류비는 배송단가 시스템 산정값(또는 직접입력)을 그대로 쓰므로 시나리오에서 고정.
     """
     scenarios = []
-    for label, prod_factor, load_delta, occ_delta in [
-        ('보수 (생산성·적재율·가동률 하향)', 0.9, -10.0, -10.0),
-        ('기준', 1.0, 0.0, 0.0),
-        ('공격 (생산성·적재율·가동률 상향)', 1.1, +10.0, +10.0),
+    for label, prod_factor, occ_delta in [
+        ('보수 (생산성 -10%, 가동률 -10%p)', 0.9, -10.0),
+        ('기준', 1.0, 0.0),
+        ('공격 (생산성 +10%, 가동률 +10%p)', 1.1, +10.0),
     ]:
         # 작업비: 생산성만 factor 적용해 재계산
         direct = 0.0
@@ -113,13 +98,6 @@ def scenario_table(processes, boxes_per_plt, overhead_rate,
             direct += (cpu / boxes_per_plt) if (p.unit == 'PLT' and boxes_per_plt) else cpu
         work = direct * (1 + overhead_rate / 100.0)
 
-        # 운송비: 평균 적재율에 delta 적용 (10~100% 범위로 제한)
-        transport = 0.0
-        if vehicle and boxes_per_plt:
-            lf = max(10.0, min(100.0, vehicle.load_factor + load_delta))
-            m_plt = vehicle.max_plt * (lf / 100.0) * vehicle.trips_per_day * vehicle.working_days
-            transport = (vehicle.monthly_cost / m_plt / boxes_per_plt) if m_plt > 0 else 0
-
         # 보관비: 목표가동률에 delta 적용 (10~100% 범위로 제한)
         storage = 0.0
         if storage_center and monthly_boxes:
@@ -128,11 +106,11 @@ def scenario_table(processes, boxes_per_plt, overhead_rate,
             rate = (storage_center.monthly_rent + storage_center.monthly_mgmt) / denom if denom > 0 else 0
             storage = rate * (avg_stock_plt or 0) / monthly_boxes
 
-        fp = final_price(work, transport, storage, admin_rate, margin_rate, boxes_per_plt)
+        fp = final_price(work, delivery_cpb, storage, admin_rate, margin_rate, boxes_per_plt)
         scenarios.append({
             'label': label,
             'work_cpb': work,
-            'transport_cpb': transport,
+            'transport_cpb': delivery_cpb,
             'storage_cpb': storage,
             'final_cpb': fp['final_cpb'],
             'final_cpp': fp['final_cpp'],

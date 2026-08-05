@@ -57,8 +57,8 @@
     <a href="{{ url_for('work_cost_master') }}" class="nav-link {% if request.endpoint == 'work_cost_master' %}active{% endif %}">
       <i class="bi bi-tools"></i> 작업비 (공정)
     </a>
-    <a href="{{ url_for('vehicle_cost_master') }}" class="nav-link {% if request.endpoint == 'vehicle_cost_master' %}active{% endif %}">
-      <i class="bi bi-truck"></i> 물류비 (차량 운행)
+    <a href="{{ url_for('delivery_master') }}" class="nav-link {% if request.endpoint == 'delivery_master' %}active{% endif %}">
+      <i class="bi bi-truck"></i> 물류비 (배송단가 연동)
     </a>
     <a href="{{ url_for('storage_master') }}" class="nav-link {% if request.endpoint == 'storage_master' %}active{% endif %}">
       <i class="bi bi-building"></i> 보관비 (센터)

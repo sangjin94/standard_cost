@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}물류비 (배송단가 연동){% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1><i class="bi bi-truck me-2"></i>물류비 — 배송단가 시스템 연동</h1>
+  <p class="text-muted mb-0">
+    물류비는 별도로 구축한 <strong>배송비 단가 산정 시스템(delivery_pricing)</strong>이 계산한
+    고객사별 박스당 배송단가(직송 + 이고 + 거점 변동용차)를 <strong>그대로</strong> 가져와 사용합니다.
+    단가 수정·재산정은 배송단가 시스템에서 하세요.
+  </p>
+</div>
+
+{% if link_error %}
+<div class="alert alert-warning"><i class="bi bi-exclamation-triangle me-1"></i>{{ link_error }}</div>
+{% endif %}
+
+<div class="row g-3 mb-3">
+  <div class="col-md-7">
+    <div class="card h-100">
+      <div class="card-header py-3 d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-people me-1"></i>배송단가 산정 고객사 ({{ customers|length }}건)</span>
+        <a href="{{ url_for('delivery_master', refresh=1, customer_id=sel_cid) }}" class="btn btn-sm btn-outline-primary">
+          <i class="bi bi-arrow-clockwise"></i> 새로고침
+        </a>
+      </div>
+      <div class="card-body p-0">
+        {% if customers %}
+        <table class="table table-hover mb-0">
+          <thead class="table-light">
+            <tr><th>고객사</th><th class="text-end">산정 행 수</th><th class="text-end"></th></tr>
+          </thead>
+          <tbody>
+          {% for c in customers %}
+          <tr {% if sel_cid == c.id %}class="table-primary"{% endif %}>
+            <td class="fw-semibold">{{ c.name }}</td>
+            <td class="text-end">{{ '{:,}'.format(c.result_rows) }}건</td>
+            <td class="text-end">
+              <a href="{{ url_for('delivery_master', customer_id=c.id) }}" class="btn btn-sm btn-outline-primary">단가 조회</a>
+              <a href="{{ url_for('quote_page', link_customer_id=c.id) }}" class="btn btn-sm btn-primary">견적에 사용</a>
+            </td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="text-center text-muted py-5">
+          <i class="bi bi-truck fs-1 d-block mb-3"></i>
+          배송단가 산정 이력이 있는 고객사가 없습니다.<br>
+          <span class="small">배송비 단가 시스템에서 출고내역 업로드 → 단가 산정을 먼저 실행하세요.</span>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-5">
+    <div class="card mb-3">
+      <div class="card-header py-3"><i class="bi bi-gear me-1"></i>연동 설정</div>
+      <div class="card-body">
+        <form method="POST" action="{{ url_for('delivery_master_config') }}" class="row g-2 align-items-end">
+          <div class="col-9">
+            <label class="form-label">배송단가 시스템 폴더 경로</label>
+            <input type="text" name="dp_dir" class="form-control form-control-sm" value="{{ dp_dir }}">
+          </div>
+          <div class="col-3">
+            <button type="submit" class="btn btn-primary btn-sm w-100">저장</button>
+          </div>
+        </form>
+        <div class="text-muted small mt-2">
+          같은 PC의 delivery_pricing 폴더를 가리킵니다. 조회 결과는 10분간 캐시되며,
+          배송단가를 새로 산정했다면 <strong>새로고침</strong>을 누르세요.
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header py-3"><i class="bi bi-info-circle me-1"></i>연동 방식</div>
+      <div class="card-body">
+        <ul class="mb-0 small text-muted" style="line-height: 2">
+          <li>배송단가 시스템의 <strong>최신 산정 배치</strong> 기준으로 집계합니다 (메인 화면과 동일한 규칙).</li>
+          <li>박스당 단가 = (직송 배송비 + 이고비용 + 거점 변동용차) ÷ 총 출고 BOX</li>
+          <li><strong>최소</strong>: 차량 용적률 비례 배부 / <strong>최대</strong>: 차량 단위 배부</li>
+          <li>월평균 출고 BOX·BOX/PLT 환산비 등 물동 실적도 함께 가져와 견적에 자동 입력됩니다.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% if summary %}
+<div class="card">
+  <div class="card-header py-3">
+    <i class="bi bi-receipt me-1"></i>{{ summary.customer_name }} — 배송단가 상세
+    {% if summary.delivery %}<small class="text-muted ms-2">최신 배치 {{ summary.delivery.batch_id }}</small>{% endif %}
+  </div>
+  <div class="card-body">
+    {% if summary.delivery %}
+    <div class="row g-3">
+      <div class="col-md-4">
+        <div class="cost-sub">박스당 배송단가</div>
+        <div class="cost-highlight">{{ '{:,.1f}'.format(summary.delivery.cpb_min) }}
+          ~ {{ '{:,.1f}'.format(summary.delivery.cpb_max) }}원<span class="fs-6 text-muted">/BOX</span></div>
+        <div class="cost-sub">최소(용적률 비례) ~ 최대(차량 단위)</div>
+        {% if summary.volume %}
+        <hr>
+        <div class="cost-sub">물동 실적 ({{ summary.volume.period }})</div>
+        <div class="fw-semibold">월평균 {{ '{:,.0f}'.format(summary.volume.monthly_boxes) }} BOX
+          / {{ '{:,.0f}'.format(summary.volume.monthly_plt) }} PLT</div>
+        <div class="cost-sub">{{ '{:,.1f}'.format(summary.volume.boxes_per_plt) }} BOX/PLT ·
+          월 {{ '%g'|format(summary.volume.biz_days_per_month) }}일 출고</div>
+        {% endif %}
+      </div>
+      <div class="col-md-8">
+        <table class="table table-sm mb-2">
+          <thead class="table-light">
+            <tr><th>구성</th><th class="text-end">최소 기준</th><th class="text-end">최대 기준</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>직송 배송비</td>
+              <td class="text-end">{{ '{:,.0f}'.format(summary.delivery.direct_cost) }}원</td>
+              <td class="text-end">{{ '{:,.0f}'.format(summary.delivery.direct_cost) }}원</td></tr>
+            <tr><td>이고비용</td>
+              <td class="text-end">{{ '{:,.0f}'.format(summary.delivery.transfer_min) }}원</td>
+              <td class="text-end">{{ '{:,.0f}'.format(summary.delivery.transfer_max) }}원</td></tr>
+            <tr><td>거점 변동용차</td>
+              <td class="text-end">{{ '{:,.0f}'.format(summary.delivery.hub_min) }}원</td>
+              <td class="text-end">{{ '{:,.0f}'.format(summary.delivery.hub_max) }}원</td></tr>
+            <tr class="table-light fw-semibold">
+              <td>합계 ÷ {{ '{:,.0f}'.format(summary.delivery.boxes) }} BOX</td>
+              <td class="text-end text-primary">{{ '{:,.1f}'.format(summary.delivery.cpb_min) }}원/BOX</td>
+              <td class="text-end text-primary">{{ '{:,.1f}'.format(summary.delivery.cpb_max) }}원/BOX</td></tr>
+          </tbody>
+        </table>
+        <a href="{{ url_for('quote_page', link_customer_id=summary.customer_id) }}" class="btn btn-primary btn-sm">
+          <i class="bi bi-calculator me-1"></i>이 단가로 종합 견적 계산
+        </a>
+      </div>
+    </div>
+    {% else %}
+    <div class="text-muted">이 고객사는 배송단가 산정 결과가 없습니다.</div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

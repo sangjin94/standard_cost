@@ -68,15 +68,6 @@
         </div>
       </div>
       <div class="col-md-2">
-        <label class="form-label">운송 차종</label>
-        <select name="vehicle_type" class="form-select form-select-sm">
-          <option value="">선택 안 함</option>
-          {% for v in vehicles %}
-          <option value="{{ v.vehicle_type }}" {% if vehicle_type == v.vehicle_type %}selected{% endif %}>{{ v.vehicle_type }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="col-md-2">
         <label class="form-label">보관 센터</label>
         <select name="center_name" class="form-select form-select-sm">
           <option value="">선택 안 함</option>
@@ -86,9 +77,9 @@
         </select>
       </div>
       <div class="col-md-2">
-        <label class="form-label">운송비 직접입력 <small class="text-muted">(선택)</small></label>
+        <label class="form-label">배송비 직접입력 <small class="text-muted">(선택)</small></label>
         <div class="input-group input-group-sm">
-          <input type="number" step="any" name="delivery_override" class="form-control" value="{{ delivery_override if delivery_override is not none else '' }}" placeholder="비우면 차량원가로 계산">
+          <input type="number" step="any" name="delivery_override" class="form-control" value="{{ delivery_override if delivery_override is not none else '' }}" placeholder="비우면 연동값 사용">
           <span class="input-group-text">원/BOX</span>
         </div>
       </div>
@@ -177,8 +168,8 @@
   <div class="col-md-4">
     <div class="card h-100">
       <div class="card-header py-3 d-flex justify-content-between">
-        <span><i class="bi bi-truck me-1"></i>② 물류비 (운송)</span>
-        <a href="{{ url_for('vehicle_cost_master') }}" class="small">마스터 관리</a>
+        <span><i class="bi bi-truck me-1"></i>② 물류비 (배송비)</span>
+        <a href="{{ url_for('delivery_master') }}" class="small">연동 관리</a>
       </div>
       <div class="card-body">
         <div class="cost-highlight">{{ '{:,.1f}'.format(delivery_cpb) }}원<span class="fs-6 text-muted">/BOX</span></div>
@@ -199,20 +190,10 @@
         <div class="text-muted mt-1" style="font-size:.75rem">
           <i class="bi bi-link-45deg"></i>배송단가 시스템 연동 · 최신 산정 배치 기준 · {{ '최소' if price_mode == 'min' else '최대' }} 모드
         </div>
-        {% elif vehicle %}
-        <table class="table table-sm mt-2 mb-0" style="font-size:.8rem">
-          <tbody>
-          <tr><td>{{ vehicle.vehicle_type }} 대당 월 운행원가</td><td class="text-end">{{ '{:,.0f}'.format(vehicle.monthly_cost) }}원</td></tr>
-          <tr><td>÷ 월 운송량 <span class="text-muted">(적재율 {{ '%g'|format(vehicle.load_factor) }}%·{{ '%g'|format(vehicle.trips_per_day) }}회전)</span></td>
-            <td class="text-end">{{ '{:,.0f}'.format(transport.monthly_plt) }} PLT</td></tr>
-          <tr><td>= PLT당 운송비</td><td class="text-end">{{ '{:,.0f}'.format(transport.cost_per_plt) }}원/PLT</td></tr>
-          <tr class="table-light"><td>÷ {{ '{:,.1f}'.format(boxes_per_plt) }} BOX/PLT</td>
-            <td class="text-end">{{ '{:,.1f}'.format(delivery_cpb) }}원/BOX</td></tr>
-          </tbody>
-        </table>
         {% else %}
         <div class="alert alert-warning py-2 mt-2 mb-0" style="font-size:.8rem">
-          배송단가 시스템 고객사를 연동하거나, 운송 차종 선택 또는 운송비 직접 입력이 필요합니다.
+          배송단가 시스템 고객사를 연동하거나 배송비를 직접 입력하세요.
+          (<a href="{{ url_for('delivery_master') }}">연동 관리</a>)
         </div>
         {% endif %}
       </div>
@@ -285,7 +266,7 @@
 <div class="row g-3 mb-3">
   <div class="col-md-7">
     <div class="card h-100">
-      <div class="card-header py-3"><i class="bi bi-graph-up-arrow me-1"></i>민감도 시나리오 <small class="text-muted">(생산성·적재율·가동률 전제 ±10%)</small></div>
+      <div class="card-header py-3"><i class="bi bi-graph-up-arrow me-1"></i>민감도 시나리오 <small class="text-muted">(생산성·보관가동률 ±10%, 물류비는 산정값 고정)</small></div>
       <div class="card-body p-0">
         <table class="table table-sm mb-0">
           <thead class="table-light">
@@ -313,7 +294,6 @@
         <form method="POST" action="{{ url_for('quote_save') }}">
           <input type="hidden" name="customer_name" value="{{ customer_name }}">
           <input type="hidden" name="center_name" value="{{ center_name }}">
-          <input type="hidden" name="vehicle_type" value="{{ vehicle_type }}">
           <input type="hidden" name="monthly_boxes" value="{{ monthly_boxes }}">
           <input type="hidden" name="boxes_per_plt" value="{{ boxes_per_plt }}">
           <input type="hidden" name="biz_days" value="{{ biz_days }}">
