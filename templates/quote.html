@@ -13,22 +13,43 @@
 <div class="card mb-3">
   <div class="card-header py-3"><i class="bi bi-input-cursor-text me-1"></i>물동 조건</div>
   <div class="card-body py-3">
+    {% if link_error %}
+    <div class="alert alert-warning py-2 mb-2" style="font-size:.85rem">
+      <i class="bi bi-exclamation-triangle me-1"></i>{{ link_error }}
+    </div>
+    {% endif %}
     <form method="GET" action="{{ url_for('quote_page') }}" class="row g-2 align-items-end">
+      <div class="col-md-3">
+        <label class="form-label">배송단가 시스템 연동 <small class="text-muted">(물류비·물동 자동)</small></label>
+        <select name="link_customer_id" class="form-select form-select-sm" onchange="this.form.submit()">
+          <option value="">연동 안 함 (직접 입력)</option>
+          {% for lc in link_customers %}
+          <option value="{{ lc.id }}" {% if link_cid == lc.id %}selected{% endif %}>{{ lc.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-1">
+        <label class="form-label">배송비 기준</label>
+        <select name="mode" class="form-select form-select-sm">
+          <option value="min" {% if price_mode == 'min' %}selected{% endif %}>최소</option>
+          <option value="max" {% if price_mode == 'max' %}selected{% endif %}>최대</option>
+        </select>
+      </div>
       <div class="col-md-2">
         <label class="form-label">화주사명</label>
         <input type="text" name="customer_name" class="form-control form-control-sm" value="{{ customer_name }}" placeholder="예: OO식품">
       </div>
       <div class="col-md-2">
-        <label class="form-label">월평균 출고 <span class="text-danger">*</span></label>
+        <label class="form-label">월평균 출고 <small class="text-muted">(연동 시 자동)</small></label>
         <div class="input-group input-group-sm">
-          <input type="number" step="any" name="monthly_boxes" class="form-control" value="{{ monthly_boxes or '' }}" placeholder="예: 50000" required>
+          <input type="number" step="any" name="monthly_boxes" class="form-control" value="{{ monthly_boxes or '' }}" placeholder="예: 50000">
           <span class="input-group-text">BOX</span>
         </div>
       </div>
       <div class="col-md-2">
-        <label class="form-label">BOX/PLT 환산비 <span class="text-danger">*</span></label>
+        <label class="form-label">BOX/PLT 환산비 <small class="text-muted">(연동 시 자동)</small></label>
         <div class="input-group input-group-sm">
-          <input type="number" step="any" name="boxes_per_plt" class="form-control" value="{{ boxes_per_plt or '' }}" placeholder="예: 60" required>
+          <input type="number" step="any" name="boxes_per_plt" class="form-control" value="{{ boxes_per_plt or '' }}" placeholder="예: 60">
           <span class="input-group-text">BOX/PLT</span>
         </div>
       </div>
@@ -97,7 +118,7 @@
 <div class="row g-3 mb-3">
   <div class="col-md-3">
     <div class="card stat-card"><div class="card-body py-3">
-      <div class="cost-sub">월평균 출고</div>
+      <div class="cost-sub">월평균 출고{% if link_summary and link_summary.volume %} <small>(실적 {{ link_summary.volume.period }})</small>{% endif %}</div>
       <div class="fw-bold fs-5">{{ '{:,.0f}'.format(monthly_boxes) }} BOX <small class="text-muted">/ {{ '{:,.0f}'.format(monthly_plt) }} PLT</small></div>
     </div></div>
   </div>
@@ -163,7 +184,20 @@
         <div class="cost-highlight">{{ '{:,.1f}'.format(delivery_cpb) }}원<span class="fs-6 text-muted">/BOX</span></div>
         {% if delivery_override is not none %}
         <div class="alert alert-info py-2 mt-2 mb-0" style="font-size:.8rem">
-          <i class="bi bi-pencil me-1"></i>직접 입력값이 적용되었습니다 (차량 원가 계산 무시).
+          <i class="bi bi-pencil me-1"></i>직접 입력값이 적용되었습니다 (연동·차량 원가 계산 무시).
+        </div>
+        {% elif link_delivery %}
+        <table class="table table-sm mt-2 mb-0" style="font-size:.8rem">
+          <tbody>
+          <tr><td>직송 배송비</td><td class="text-end">{{ '{:,.0f}'.format(link_delivery.direct_cost) }}원</td></tr>
+          <tr><td>이고비용</td><td class="text-end">{{ '{:,.0f}'.format(link_delivery.transfer_min if price_mode == 'min' else link_delivery.transfer_max) }}원</td></tr>
+          <tr><td>거점 변동용차</td><td class="text-end">{{ '{:,.0f}'.format(link_delivery.hub_min if price_mode == 'min' else link_delivery.hub_max) }}원</td></tr>
+          <tr class="table-light"><td>합계 ÷ {{ '{:,.0f}'.format(link_delivery.boxes) }} BOX</td>
+            <td class="text-end">{{ '{:,.1f}'.format(delivery_cpb) }}원/BOX</td></tr>
+          </tbody>
+        </table>
+        <div class="text-muted mt-1" style="font-size:.75rem">
+          <i class="bi bi-link-45deg"></i>배송단가 시스템 연동 · 최신 산정 배치 기준 · {{ '최소' if price_mode == 'min' else '최대' }} 모드
         </div>
         {% elif vehicle %}
         <table class="table table-sm mt-2 mb-0" style="font-size:.8rem">
@@ -178,7 +212,7 @@
         </table>
         {% else %}
         <div class="alert alert-warning py-2 mt-2 mb-0" style="font-size:.8rem">
-          운송 차종을 선택하거나 운송비를 직접 입력하세요.
+          배송단가 시스템 고객사를 연동하거나, 운송 차종 선택 또는 운송비 직접 입력이 필요합니다.
         </div>
         {% endif %}
       </div>
@@ -287,6 +321,7 @@
           <input type="hidden" name="avg_stock_plt" value="{{ avg_stock_plt }}">
           <input type="hidden" name="work_cpb" value="{{ work_cpb }}">
           <input type="hidden" name="delivery_cpb" value="{{ delivery_cpb }}">
+          <input type="hidden" name="delivery_source" value="{{ delivery_source }}">
           <input type="hidden" name="storage_cpb" value="{{ storage.cost_per_box }}">
           <input type="hidden" name="work_overhead_rate" value="{{ overhead_rate }}">
           <input type="hidden" name="admin_rate" value="{{ admin_rate }}">
@@ -329,7 +364,7 @@
         <tr>
           <th>견적명</th><th>화주사</th><th>저장일</th>
           <th class="text-end">월 BOX</th>
-          <th class="text-end">작업비</th><th class="text-end">물류비</th><th class="text-end">보관비</th>
+          <th class="text-end">작업비</th><th class="text-end">물류비</th><th>물류비 출처</th><th class="text-end">보관비</th>
           <th class="text-end">관리비/이익률</th>
           <th class="text-end">최종/BOX</th><th class="text-end">최종/PLT</th>
           <th>메모</th><th></th>
@@ -344,6 +379,7 @@
         <td class="text-end">{{ '{:,.0f}'.format(q.monthly_boxes or 0) }}</td>
         <td class="text-end">{{ '{:,.1f}'.format(q.work_cpb or 0) }}</td>
         <td class="text-end">{{ '{:,.1f}'.format(q.delivery_cpb or 0) }}</td>
+        <td class="text-muted small">{{ q.delivery_source or '–' }}</td>
         <td class="text-end">{{ '{:,.1f}'.format(q.storage_cpb or 0) }}</td>
         <td class="text-end">{{ '%g'|format(q.admin_rate or 0) }}% / {{ '%g'|format(q.margin_rate or 0) }}%</td>
         <td class="text-end fw-bold text-primary">{{ '{:,.0f}'.format(q.final_cpb or 0) }}원</td>

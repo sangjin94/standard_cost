@@ -100,6 +100,7 @@ class StandardQuote(db.Model):
     avg_stock_plt = db.Column(db.Float)                    # 평균 재고 PLT
     work_cpb = db.Column(db.Float)                         # 작업비/박스 (간접배부 포함)
     delivery_cpb = db.Column(db.Float)                     # 물류비(운송)/박스
+    delivery_source = db.Column(db.String(100))            # 물류비 출처 (연동/직접입력/차량원가)
     storage_cpb = db.Column(db.Float)                      # 보관비/박스
     work_overhead_rate = db.Column(db.Float)               # 작업 간접배부율 (%)
     admin_rate = db.Column(db.Float)                       # 일반관리비율 (%)
