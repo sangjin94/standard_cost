@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}표준물류단가 산정{% endblock %} | HanEx</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<style>
+  :root {
+    --bs-primary: #0d9488; --bs-primary-rgb: 13,148,136;
+    --bs-success: #059669; --bs-success-rgb: 5,150,105;
+    --bs-warning: #d97706; --bs-warning-rgb: 217,119,6;
+    --bs-danger:  #dc2626; --bs-danger-rgb:  220,38,38;
+  }
+  .btn-primary { background: linear-gradient(135deg,#14b8a6,#0d9488); border-color: #0d9488; }
+  .btn-primary:hover, .btn-primary:focus { background: linear-gradient(135deg,#0d9488,#0f766e); border-color: #0f766e; }
+  .btn-outline-primary { color: #0d9488; border-color: #0d9488; }
+  .btn-outline-primary:hover { background: #0d9488; border-color: #0d9488; }
+  .text-primary { color: #0d9488 !important; }
+  .bg-primary { background: linear-gradient(135deg,#14b8a6,#0d9488) !important; }
+  .table-primary { --bs-table-bg: #ccfbf1; }
+
+  body { background: #f4f6fb; font-family: 'Segoe UI', 'Malgun Gothic', sans-serif; }
+  .sidebar { width: 220px; min-height: 100vh; background: #134e4a; position: fixed; top: 0; left: 0; z-index: 100; }
+  .sidebar .brand { padding: 1.5rem 1rem 1rem; color: #fff; font-weight: 700; font-size: 1.05rem; border-bottom: 1px solid #1f6f66; }
+  .sidebar .brand span { color: #5eead4; }
+  .sidebar .nav-link { color: #99c5bf; padding: .55rem 1.2rem; font-size: .92rem; display: flex; align-items: center; gap: .55rem; border-radius: 8px; margin: 2px 8px; transition: background .15s, color .15s; }
+  .sidebar .nav-link:hover { color: #fff; background: #1f6f66; }
+  .sidebar .nav-link.active { color: #fff; background: linear-gradient(135deg,#14b8a6,#0d9488); box-shadow: 0 4px 12px rgba(13,148,136,.4); }
+  .sidebar .nav-section { color: #5ba39a; font-size: .72rem; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; padding: .8rem 1.3rem .2rem; }
+  .main-content { margin-left: 220px; padding: 2rem; min-height: 100vh; }
+  .page-header { margin-bottom: 1.5rem; }
+  .page-header h1 { font-size: 1.5rem; font-weight: 700; color: #134e4a; margin: 0; }
+  .card { border: none; box-shadow: 0 2px 12px rgba(30,41,59,.07); border-radius: 14px; }
+  .card-header { background: #fff; border-bottom: 1px solid #eef0f6; font-weight: 600; color: #134e4a; border-radius: 14px 14px 0 0 !important; }
+  .stat-card { border-radius: 14px; border: none; }
+  .table th { font-size: .82rem; color: #6c757d; font-weight: 600; border-top: none; }
+  .table td { vertical-align: middle; font-size: .9rem; }
+  .btn-sm { font-size: .8rem; }
+  .btn { border-radius: 9px; }
+  .alert { border-radius: 8px; border: none; }
+  .form-label { font-size: .88rem; font-weight: 600; color: #344054; }
+  .cost-highlight { font-size: 1.8rem; font-weight: 700; color: #134e4a; }
+  .cost-sub { font-size: .85rem; color: #6c757d; }
+</style>
+</head>
+<body>
+<div class="sidebar">
+  <div class="brand">📦 <span>HanEx</span> 표준물류단가</div>
+  <nav class="mt-2">
+    <div class="nav-section">견적</div>
+    <a href="{{ url_for('quote_page') }}" class="nav-link {% if request.endpoint == 'quote_page' %}active{% endif %}">
+      <i class="bi bi-calculator"></i> 종합 견적
+    </a>
+    <div class="nav-section">원가 마스터</div>
+    <a href="{{ url_for('work_cost_master') }}" class="nav-link {% if request.endpoint == 'work_cost_master' %}active{% endif %}">
+      <i class="bi bi-tools"></i> 작업비 (공정)
+    </a>
+    <a href="{{ url_for('vehicle_cost_master') }}" class="nav-link {% if request.endpoint == 'vehicle_cost_master' %}active{% endif %}">
+      <i class="bi bi-truck"></i> 물류비 (차량 운행)
+    </a>
+    <a href="{{ url_for('storage_master') }}" class="nav-link {% if request.endpoint == 'storage_master' %}active{% endif %}">
+      <i class="bi bi-building"></i> 보관비 (센터)
+    </a>
+  </nav>
+</div>
+<div class="main-content">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+          {{ message }}
+          <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+function confirmDelete(msg) { return confirm(msg || '정말 삭제하시겠습니까?'); }
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

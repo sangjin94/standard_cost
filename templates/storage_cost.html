@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}보관비 마스터{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1><i class="bi bi-building me-2"></i>보관비 마스터 (센터 원가)</h1>
+  <p class="text-muted mb-0">
+    센터별 월 원가와 유효 CAPA로 PLT당 월 보관단가를 산정합니다.
+    <strong>PLT/월 단가 = (임차료 + 관리비) ÷ (유효 PLT × 목표가동률)</strong>
+    — 100%가 아닌 목표가동률로 나눠 공실 리스크를 반영합니다.
+  </p>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-md-5">
+    <div class="card h-100">
+      <div class="card-header py-3"><i class="bi bi-plus-circle me-1"></i>센터 원가 등록 / 수정 <small class="text-muted">(같은 센터명이면 업데이트)</small></div>
+      <div class="card-body">
+        <form method="POST" action="{{ url_for('storage_add') }}">
+          <div class="mb-3">
+            <label class="form-label">센터명 <span class="text-danger">*</span></label>
+            <input type="text" name="center_name" class="form-control form-control-sm" placeholder="예: 이천센터 (상온)" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">월 임차료 <small class="text-muted">(자가센터는 감가상각 상당액)</small></label>
+            <div class="input-group input-group-sm">
+              <input type="text" name="monthly_rent" class="form-control" placeholder="예: 50000000">
+              <span class="input-group-text">원/월</span>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">월 관리비 <small class="text-muted">(수도광열·보험·랙/설비 감가 포함)</small></label>
+            <div class="input-group input-group-sm">
+              <input type="text" name="monthly_mgmt" class="form-control" placeholder="예: 8000000">
+              <span class="input-group-text">원/월</span>
+            </div>
+          </div>
+          <div class="row g-2 mb-3">
+            <div class="col-7">
+              <label class="form-label">유효 보관 CAPA <span class="text-danger">*</span></label>
+              <div class="input-group input-group-sm">
+                <input type="text" name="effective_plt_capa" class="form-control" placeholder="예: 3000" required>
+                <span class="input-group-text">PLT</span>
+              </div>
+            </div>
+            <div class="col-5">
+              <label class="form-label">목표가동률</label>
+              <div class="input-group input-group-sm">
+                <input type="text" name="target_occupancy" class="form-control" value="85">
+                <span class="input-group-text">%</span>
+              </div>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">메모</label>
+            <input type="text" name="memo" class="form-control form-control-sm" placeholder="온도대, 랙 구성 등">
+          </div>
+          <button type="submit" class="btn btn-primary w-100">등록 / 업데이트</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-7">
+    <div class="card h-100">
+      <div class="card-header py-3"><i class="bi bi-info-circle me-1"></i>산정 가이드</div>
+      <div class="card-body">
+        <ul class="mb-0 small text-muted" style="line-height: 2">
+          <li><strong>유효 CAPA</strong>: 전체 면적에서 통로·작업장·스테이징을 제외한 실보관 가능 PLT 수 (랙 단수 반영).</li>
+          <li><strong>목표가동률</strong>: 통상 80~85%. 100%로 나누면 공실 발생 시 즉시 적자 구조가 됩니다.</li>
+          <li><strong>월 관리비</strong>: 냉장/냉동 센터는 전기료 비중이 크므로 온도대별로 센터를 분리 등록하는 것을 권장합니다.</li>
+          <li>종합 견적에서는 <strong>평균 재고 PLT (일평균 출고 PLT × 재고회전일수)</strong>에 이 단가를 곱해 보관비를 산출합니다.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header py-3"><i class="bi bi-table me-1"></i>등록된 센터 원가 ({{ rows|length }}건)</div>
+  <div class="card-body p-0">
+    {% if rows %}
+    <table class="table table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>센터명</th>
+          <th class="text-end">월 임차료</th>
+          <th class="text-end">월 관리비</th>
+          <th class="text-end">유효 CAPA</th>
+          <th class="text-end">목표가동률</th>
+          <th class="text-end">PLT/월 보관단가</th>
+          <th>메모</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="fw-semibold">{{ r.center_name }}</td>
+        <td class="text-end">{{ '{:,.0f}'.format(r.monthly_rent) }}원</td>
+        <td class="text-end">{{ '{:,.0f}'.format(r.monthly_mgmt) }}원</td>
+        <td class="text-end">{{ '{:,.0f}'.format(r.effective_plt_capa) }} PLT</td>
+        <td class="text-end">{{ '%g'|format(r.target_occupancy) }}%</td>
+        <td class="text-end fw-bold text-primary">{{ '{:,.0f}'.format(r.plt_month_rate) }}원/PLT·월</td>
+        <td class="text-muted small">{{ r.memo or '' }}</td>
+        <td class="text-end">
+          <form method="POST" action="{{ url_for('storage_delete', sid=r.id) }}" class="d-inline"
+                onsubmit="return confirmDelete()">
+            <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="text-center text-muted py-5">
+      <i class="bi bi-building fs-1 d-block mb-3"></i>
+      등록된 센터 원가가 없습니다.<br>
+      <span class="small">종합 견적에서 보관비를 산출하려면 최소 1개 센터의 원가를 등록하세요.</span>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
