@@ -143,7 +143,7 @@
           {{ caller() }}
         </div>
         <div class="modal-footer py-2">
-          <span class="small text-muted me-auto">전체 조건은 <a href="{{ url_for('quote_setup', qid=q.id) }}">② 산정 조건</a>에서</span>
+          <span class="small text-muted me-auto">기본값은 <a href="{{ url_for('masters') }}">원가 마스터</a>에서 · 빈칸 = 기본값</span>
           <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">취소</button>
           <button class="btn btn-sm btn-primary"><i class="bi bi-arrow-repeat me-1"></i>저장하고 재계산</button>
         </div>
@@ -166,7 +166,20 @@
       {% if not p.is_active %}<span class="badge text-bg-warning">옵션</span>{% endif %}</label>
   </div>
   {% endfor %}
-  <div class="small text-muted mt-2">시급·생산성 등 숫자는 <a href="{{ url_for('masters') }}">원가 마스터</a> 또는 ②화면 파라미터 보정에서</div>
+  <hr class="my-2">
+  <div class="fw-semibold small mb-1">인건비·간접 보정 (이 견적만 — 입·출고 공통)</div>
+  <div class="row g-2">
+    {% for pk, label in [('param:daily_wage','일용 시급 (원/시)'), ('param:forklift_wage','지게차 시급 (원/시)'),
+                          ('param:wage_burden','부담률 (배)'), ('param:overhead_rate','간접배부율 (0~1)')] %}
+    <div class="col-6">
+      <label class="form-label small mb-1">{{ label }}</label>
+      <div class="input-group input-group-sm">
+        <span class="input-group-text" style="min-width:60px">{{ params[pk[6:]] }}</span>
+        <input name="{{ pk }}" class="form-control" placeholder="보정값" value="{{ overrides.get(pk, '') }}">
+      </div>
+    </div>
+    {% endfor %}
+  </div>
 {% endcall %}
 
 {% call edit_modal('storage', '보관비', 'bi-building') %}
@@ -217,7 +230,28 @@
       {% if not p.is_active %}<span class="badge text-bg-warning">옵션</span>{% endif %}</label>
   </div>
   {% endfor %}
-  <div class="small text-muted mt-2">시급·생산성·간접배부율·소모품은 <a href="{{ url_for('masters') }}">원가 마스터</a> 또는 ②화면에서</div>
+  <div class="small text-muted mt-2">시급·부담률·간접배부율 보정은 입고 카드 수정창에 있습니다 (입·출고 공통 적용) ·
+    소모품 단가는 <a href="{{ url_for('masters') }}">원가 마스터</a>에서</div>
+{% endcall %}
+
+{% call edit_modal('margin', '마진 (일반관리비·목표이익)', 'bi-percent') %}
+  <div class="row g-2">
+    <div class="col-6">
+      <label class="form-label small mb-1">일반관리비율 (A23, 0~1)</label>
+      <div class="input-group input-group-sm">
+        <span class="input-group-text" style="min-width:60px">{{ params.admin_rate }}</span>
+        <input name="param:admin_rate" class="form-control" placeholder="보정값" value="{{ overrides.get('param:admin_rate', '') }}">
+      </div>
+    </div>
+    <div class="col-6">
+      <label class="form-label small mb-1">목표이익률 (A24, 0~1)</label>
+      <div class="input-group input-group-sm">
+        <span class="input-group-text" style="min-width:60px">{{ params.margin_rate }}</span>
+        <input name="param:margin_rate" class="form-control" placeholder="보정값" value="{{ overrides.get('param:margin_rate', '') }}">
+      </div>
+    </div>
+  </div>
+  <div class="small text-muted mt-2">견적단가 = 원가 × (1+일반관리비) ÷ (1−목표이익률). 0 입력 = 마진 없는 원가 견적</div>
 {% endcall %}
 
 {% call edit_modal('delivery', '배송비', 'bi-truck') %}
@@ -273,13 +307,47 @@
       </div>
     </div>
   </div>
+  <div class="row g-2 mt-1">
+    <div class="col-6">
+      <label class="form-label small mb-1">직송 기준 PLT (A28)</label>
+      <div class="input-group input-group-sm">
+        <span class="input-group-text" style="min-width:60px">{{ params.direct_plt_threshold }}</span>
+        <input name="param:direct_plt_threshold" class="form-control" placeholder="보정값"
+               value="{{ overrides.get('param:direct_plt_threshold', '') }}">
+      </div>
+    </div>
+    <div class="col-6">
+      <label class="form-label small mb-1">택배 기준 BOX (A29)</label>
+      <div class="input-group input-group-sm">
+        <span class="input-group-text" style="min-width:60px">{{ params.parcel_box_threshold|int }}</span>
+        <input name="param:parcel_box_threshold" class="form-control" placeholder="보정값"
+               value="{{ overrides.get('param:parcel_box_threshold', '') }}">
+      </div>
+    </div>
+  </div>
+  {% if dp_available %}
+  <hr class="my-2">
+  <div class="small mb-1">
+    <b>모드③ 연동:</b>
+    {% if overrides.get('link_customer') %}
+      {{ overrides.get('link_customer') }} {{ overrides.get('link_min') }}~{{ overrides.get('link_max') }}원/BOX 수신됨
+    {% else %}미연동{% endif %}
+    <button type="button" class="btn btn-sm btn-outline-primary ms-1" onclick="loadDpCustomers()">
+      <i class="bi bi-plug me-1"></i>배송단가 시스템에서 불러오기</button>
+    <span id="dpBox"></span>
+  </div>
+  {% endif %}
   <div class="small text-muted mt-2">택배 화주 = 택배+직송뿐(공동·이고 자동 제외) · 분리 모드 비율은 데이터 추출(①화면 보정 가능)</div>
 {% endcall %}
 
 <div class="row g-3 mb-4">
   <div class="col-md-6">
     <div class="card h-100">
-      <div class="card-header"><i class="bi bi-receipt me-1"></i> STEP 2 — 마진 적용 → 최종 견적 단가표</div>
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-receipt me-1"></i> STEP 2 — 마진 적용 → 최종 견적 단가표</span>
+        <button type="button" class="btn btn-sm btn-outline-primary py-0" onclick="openEdit(event, 'edit-margin')">
+          <i class="bi bi-pencil-square"></i> 마진 수정</button>
+      </div>
       <div class="card-body py-2 px-3" style="background:#f0fdfa;border-bottom:1px solid #ccfbf1">
         <div class="d-flex justify-content-between small py-1">
           <span>월 원가 합계 (STEP 1)</span>
@@ -348,6 +416,20 @@
 
 {% block scripts %}
 <script>
+async function loadDpCustomers() {
+  const box = document.getElementById('dpBox');
+  box.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 불러오는 중… (최초 1분 가량)';
+  try {
+    const r = await fetch('{{ url_for("api_delivery_customers") }}');
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error);
+    let html = '<form method="post" action="{{ url_for("quote_link_delivery", qid=q.id) }}" class="d-inline-flex gap-1 mt-1">';
+    html += '<select name="customer_id" class="form-select form-select-sm" style="width:auto">';
+    for (const c of j.customers) html += `<option value="${c.id}">${c.name} (${c.result_rows.toLocaleString()}행)</option>`;
+    html += '</select><button class="btn btn-sm btn-primary">연동</button></form>';
+    box.innerHTML = html;
+  } catch (e) { box.innerHTML = '<span class="text-danger small">연동 실패: ' + e.message + '</span>'; }
+}
 function openTrace(ev, id) {
   if (ev.target.closest('.edit-btn')) return;   // 수정 버튼 클릭은 계산 과정 모달 제외
   bootstrap.Modal.getOrCreateInstance(document.getElementById(id)).show();

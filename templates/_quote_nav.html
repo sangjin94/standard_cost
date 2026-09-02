@@ -28,8 +28,6 @@
 <nav class="step-nav">
   <a href="{{ url_for('quote_data', qid=q.id) }}" class="{% if step=='data' %}active{% elif profile_meta.ship %}done{% endif %}">
     <span class="num">1</span>데이터 · 물동 프로파일</a>
-  <a href="{{ url_for('quote_setup', qid=q.id) }}" class="{% if step=='setup' %}active{% endif %}">
-    <span class="num">2</span>산정 조건 (흐름·원가·배송)</a>
   <a href="{{ url_for('quote_result', qid=q.id) }}" class="{% if step=='result' %}active{% endif %}">
-    <span class="num">3</span>산정 결과</a>
+    <span class="num">2</span>산정 결과 <span class="text-muted fw-normal" style="font-size:.74rem">— 조건은 각 카드 ✎에서</span></a>
 </nav>

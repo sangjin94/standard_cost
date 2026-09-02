@@ -99,9 +99,11 @@
     </div>
     {% endif %}
   </div>
-  <div class="card-footer bg-white d-flex justify-content-between">
-    <button class="btn btn-outline-primary"><i class="bi bi-save me-1"></i>보정값 저장</button>
-    <a class="btn btn-primary" href="{{ url_for('quote_setup', qid=q.id) }}">다음: 산정 조건 <i class="bi bi-arrow-right ms-1"></i></a>
+  <div class="card-footer bg-white d-flex justify-content-between align-items-center gap-2">
+    <button class="btn btn-outline-primary text-nowrap"><i class="bi bi-save me-1"></i>보정값 저장</button>
+    <input name="memo" class="form-control form-control-sm" style="max-width:420px"
+           placeholder="견적 메모" value="{{ q.memo or '' }}">
+    <a class="btn btn-primary text-nowrap" href="{{ url_for('quote_result', qid=q.id) }}">다음: 산정 결과 <i class="bi bi-arrow-right ms-1"></i></a>
   </div>
 </div>
 </form>

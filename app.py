@@ -240,8 +240,8 @@ def quote_data(qid):
 
 @app.route('/quote/<int:qid>/setup')
 def quote_setup(qid):
-    q = Quote.query.get_or_404(qid)
-    return render_template('quote_setup.html', step='setup', **_quote_ctx(q))
+    # 구 ② 산정 조건 화면은 제거 — 조건은 결과 화면의 카드별 수정 팝업에서
+    return redirect(url_for('quote_result', qid=qid))
 
 
 @app.route('/quote/<int:qid>/result')
@@ -353,7 +353,7 @@ def quote_override(qid):
     q.overrides_json = json.dumps(overrides, ensure_ascii=False)
     db.session.commit()
     flash('저장했습니다 — 단가를 다시 계산했습니다.', 'success')
-    nxt = {'data': 'quote_data', 'setup': 'quote_setup', 'result': 'quote_result'}
+    nxt = {'data': 'quote_data', 'result': 'quote_result'}
     return redirect(url_for(nxt.get(request.form.get('next'), 'quote_result'), qid=qid))
 
 
@@ -409,7 +409,7 @@ def quote_link_delivery(qid):
               f"{overrides['link_min']:,.0f}~{overrides['link_max']:,.0f}원/BOX", 'success')
     except Exception as e:
         flash(f'배송단가 연동 실패: {e}', 'danger')
-    return redirect(url_for('quote_setup', qid=qid))
+    return redirect(url_for('quote_result', qid=qid))
 
 
 # ─── 엑셀: 업로드 템플릿 · 견적서 ────────────────────────────────────────────
