@@ -58,10 +58,28 @@ def _params(overrides=None):
     return p
 
 
-def _processes():
+def _processes(excluded_ids=None):
     rows = WorkProcess.query.filter_by(is_active=True).order_by(WorkProcess.sort_order).all()
-    return [{'name': r.name, 'flow': r.flow, 'unit': r.unit,
-             'productivity': r.productivity, 'worker_type': r.worker_type} for r in rows]
+    ex = set(excluded_ids or [])
+    return [{'id': r.id, 'name': r.name, 'flow': r.flow, 'unit': r.unit,
+             'productivity': r.productivity, 'worker_type': r.worker_type}
+            for r in rows if r.id not in ex]
+
+
+def _stage_conf(overrides):
+    """견적별 스테이지 구성 (A26·A27): 보관/이고 토글 + 이고 단가 + 공정 제외."""
+    def _f(key, default=0.0):
+        try:
+            return float(overrides.get(key) or default)
+        except (TypeError, ValueError):
+            return default
+    excluded = [int(k.split(':', 1)[1]) for k, v in overrides.items()
+                if k.startswith('proc_off:') and v]
+    return {
+        'storage': overrides.get('use_storage', '1') != '0',
+        'transfer': overrides.get('use_transfer', '0') == '1',
+        'transfer_per_plt': _f('transfer_per_plt'),
+    }, excluded
 
 
 def _load(q):
@@ -105,8 +123,10 @@ def _compute(q):
     if not s:
         return '출고내역을 먼저 업로드하세요.', None, None, params
     region_rates = {r.sido: r.cost_per_box for r in RegionRate.query.all()}
+    stages, excluded = _stage_conf(overrides)
     try:
-        result = engine.compute(s, params, _processes(), region_rates, _delivery_conf(overrides))
+        result = engine.compute(s, params, _processes(excluded), region_rates,
+                                _delivery_conf(overrides), stages)
     except ValueError as e:
         return str(e), s, None, params
     return None, s, result, params
@@ -175,6 +195,9 @@ def quote_view(qid):
                            },
                            delivery=_delivery_conf(overrides),
                            region_rates=region_rates,
+                           all_processes=WorkProcess.query.filter_by(is_active=True)
+                                                    .order_by(WorkProcess.sort_order).all(),
+                           stage_conf=_stage_conf(overrides),
                            dp_available=dp_available)
 
 
@@ -239,8 +262,16 @@ def quote_override(qid):
     """프로파일 보정값 · 파라미터 오버라이드 · 배송 설정 저장."""
     q = Quote.query.get_or_404(qid)
     _, overrides = _load(q)
+    if request.form.get('stage_form'):      # 체크박스는 미체크 시 미전송 → marker로 일괄 재구성
+        overrides['use_storage'] = '1' if request.form.get('use_storage') else '0'
+        overrides['use_transfer'] = '1' if request.form.get('use_transfer') else '0'
+        for k in [k for k in overrides if k.startswith('proc_off:')]:
+            overrides.pop(k)
+        for k in request.form:
+            if k.startswith('proc_off:'):
+                overrides[k] = '1'
     for k, v in request.form.items():
-        if k in ('csrf',):
+        if k in ('csrf', 'stage_form', 'use_storage', 'use_transfer') or k.startswith('proc_off:'):
             continue
         v = v.strip()
         if k.startswith(('p:', 'param:')):
@@ -248,7 +279,7 @@ def quote_override(qid):
                 overrides.pop(k, None)      # 빈칸 = 추출값/기본값 복귀
             else:
                 overrides[k] = v
-        elif k in ('delivery_mode', 'manual_min', 'manual_max', 'memo'):
+        elif k in ('delivery_mode', 'manual_min', 'manual_max', 'transfer_per_plt', 'memo'):
             if k == 'memo':
                 q.memo = v
             elif v == '':
@@ -365,7 +396,7 @@ def quote_export(qid):
         ['분석기간', f"{s['period_from']} ~ {s['period_to']} ({s['biz_days']}영업일)"],
         ['월평균 물동', f"{s['monthly_box']:,} BOX / {s['monthly_plt']:,} PLT"],
         [], ['항목', '청구단위', '원가', '견적단가'],
-    ] + [[t['item'], t['unit'], t['cost'], t['price']] for t in r['tariff']] + [
+    ] + [[t['item'], t['unit'], t['cost'], t['price']] for t in r['tariff']] +         [[sg['name'], '미사용', sg['off_reason'], ''] for sg in r['stages'] if not sg['enabled']] + [
         [], ['종합 박스당 견적단가',
              f"{r['final']['price_cpb_min']:,}~{r['final']['price_cpb_max']:,} 원/BOX"],
         ['월 예상 청구액',

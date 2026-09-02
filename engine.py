@@ -1,7 +1,9 @@
 """표준물류단가 산정 엔진 (docs/DESIGN.md §4 가정, §5 수식).
 
-compute(summary, params, processes, region_rates, delivery) → 결과 dict
-모든 단계의 중간값을 결과에 남겨 화면·견적서에서 "왜 이 단가인가"를 추적할 수 있게 한다.
+compute(summary, params, processes, region_rates, delivery, stages) → 결과 dict
+결과는 물류 흐름 순서의 5개 스테이지(입고 작업비 → 보관비 → 출고 작업비 → 이고비 → 배송비)로
+구성되며, 화주 특성에 따라 스테이지를 끌 수 있다(A26 — 예: 보관 없는 크로스도킹 화주).
+모든 단계의 중간값을 결과에 남겨 "왜 이 단가인가"를 추적할 수 있게 한다.
 """
 import math
 
@@ -36,9 +38,9 @@ PARAM_DEFS = [
 PROCESS_DEFS = [
     # name, flow, unit, productivity, worker_type, memo (가정 A6)
     ('하차(파렛트)',   '입고', 'PLT', 25,  '지게차', '카운트 포함 — A6a'),
-    ('적치(랙 입고)',  '입고', 'PLT', 20,  '지게차', 'A6c'),
+    ('적치(랙 입고)',  '입고', 'PLT', 20,  '지게차', 'A6c — 보관 미사용(크로스도킹) 화주는 견적에서 제외'),
     ('피킹(케이스)',   '출고', 'BOX', 90,  '일용',   '오더 밀도 보통 — A6d'),
-    ('검수·포장',      '출고', 'BOX', 120, '일용',   '바코드 검수+간이포장 — A6e'),
+    ('검수·포장',      '출고', 'BOX', 120, '일용',   'A6e'),
     ('상차(파렛트)',   '출고', 'PLT', 25,  '지게차', 'A6f'),
 ]
 
@@ -51,6 +53,8 @@ REGION_DEFS = [
     ('제주', 1200),
 ]
 
+DEFAULT_STAGES = {'storage': True, 'transfer': False, 'transfer_per_plt': 0.0}
+
 
 def hourly_cost(params, worker_type):
     """실부담 시급 (A1·A2)."""
@@ -59,20 +63,24 @@ def hourly_cost(params, worker_type):
     return params['daily_wage'] * params['wage_burden']
 
 
-def compute(s, params, processes, region_rates, delivery):
+def compute(s, params, processes, region_rates, delivery, stages=None):
     """s: profile_extract.summarize() 출력(수동 보정 반영 후), params: dict,
-    processes: [{name,flow,unit,productivity,worker_type}], region_rates: {시도: 원/BOX},
-    delivery: {'mode': 'manual'|'region'|'link', 'manual_min','manual_max', 'link_min','link_max'}
+    processes: [{name,flow,unit,productivity,worker_type}] (견적별 제외 반영 후),
+    region_rates: {시도: 원/BOX},
+    delivery: {'mode': 'manual'|'region'|'link', 'manual_min','manual_max','link_min','link_max'},
+    stages: {'storage': bool, 'transfer': bool, 'transfer_per_plt': float} (A26·A27)
     """
+    st = dict(DEFAULT_STAGES)
+    st.update(stages or {})
+
     bpp = s['boxes_per_plt'] or params['default_boxes_per_plt']
     monthly_box = s['monthly_box']
     monthly_plt = s['monthly_plt']
     if not monthly_box:
         raise ValueError('월평균 출고 BOX가 0입니다.')
 
-    # ── 작업비 (§5.1) ───────────────────────────────────────────────────────
+    # ── 작업비 공정 계산 (§5.1) — 입고/출고 스테이지로 분리 ────────────────────
     proc_rows = []
-    direct_cpb = 0.0            # 박스당 직접작업비
     manhours_avg = {'입고': 0.0, '출고': 0.0}
     manhours_p95 = {'입고': 0.0, '출고': 0.0}
     for p in processes:
@@ -99,10 +107,19 @@ def compute(s, params, processes, region_rates, delivery):
             'wage': round(wage), 'unit_cost': round(unit_cost, 1),
             'cost_per_box': round(cpb, 2), 'day_manhours': round(mh, 1),
         })
-        direct_cpb += cpb
 
+    oh = 1 + params['overhead_rate']
+    in_procs  = [r for r in proc_rows if r['flow'] == '입고']
+    out_procs = [r for r in proc_rows if r['flow'] == '출고']
+    inbound_direct_cpb  = sum(r['cost_per_box'] for r in in_procs)
+    outbound_direct_cpb = sum(r['cost_per_box'] for r in out_procs)
     supplies_cpb = params['wrap_per_plt'] / bpp + params['label_per_box']       # A22
-    work_cpb = direct_cpb * (1 + params['overhead_rate']) + supplies_cpb        # §5.1
+
+    inbound_cpb  = inbound_direct_cpb * oh
+    outbound_cpb = outbound_direct_cpb * oh + supplies_cpb
+    inbound_plt_rate  = inbound_cpb * bpp        # 원/PLT 청구 환산
+    work_cpb = inbound_cpb + outbound_cpb        # (구버전 호환 합계)
+    direct_cpb = inbound_direct_cpb + outbound_direct_cpb
 
     # 인력 소요 (참고 표시): 평시/피크 (A5·A11)
     mh_total_avg = manhours_avg['입고'] + manhours_avg['출고']
@@ -119,7 +136,7 @@ def compute(s, params, processes, region_rates, delivery):
                  f"평시 {heads_avg:.1f}명 고정 + 피크일 {max(heads_p95-heads_avg,0):.1f}명 일용 (A5·A11)"),
     }
 
-    # ── 보관비 (§5.2) ───────────────────────────────────────────────────────
+    # ── 보관비 (§5.2) — 스테이지 토글 A26 ───────────────────────────────────
     avg_stock = s['avg_stock_plt']
     eff_plt_per_py = params['plt_per_py'] * params['occupancy']
     need_py = avg_stock / eff_plt_per_py if eff_plt_per_py else 0
@@ -127,17 +144,30 @@ def compute(s, params, processes, region_rates, delivery):
     forklift_alloc = (params['forklift_month'] / params['plt_per_forklift']) if params['plt_per_forklift'] else 0
     plt_month_rate = rate_space + params['pallet_month'] + forklift_alloc
     monthly_storage = plt_month_rate * avg_stock
-    storage_cpb = monthly_storage / monthly_box
+    storage_cpb = (monthly_storage / monthly_box) if st['storage'] else 0.0
     storage = {
+        'enabled': bool(st['storage']),
         'avg_stock_plt': avg_stock, 'need_py': round(need_py, 1),
         'eff_plt_per_py': round(eff_plt_per_py, 2),
         'space_rate': round(rate_space), 'forklift_alloc': round(forklift_alloc),
         'pallet_month': params['pallet_month'],
         'plt_month_rate': round(plt_month_rate),
         'plt_day_rate': round(plt_month_rate / 30.4, 1),
-        'monthly_cost': round(monthly_storage),
+        'monthly_cost': round(monthly_storage) if st['storage'] else 0,
         'cost_per_box': round(storage_cpb, 2),
-        'stock_source': s['stock_source'],
+        'stock_source': s['stock_source'] if st['storage'] else '보관 미사용 화주 (크로스도킹/통과형) — A26',
+    }
+
+    # ── 이고비 (§5.3-2, A27) — 선택 스테이지, 원/PLT 직접입력 ────────────────
+    transfer_per_plt = float(st.get('transfer_per_plt') or 0)
+    transfer_cpb = (transfer_per_plt / bpp) if st['transfer'] else 0.0
+    transfer = {
+        'enabled': bool(st['transfer']),
+        'per_plt': round(transfer_per_plt, 1),
+        'cost_per_box': round(transfer_cpb, 2),
+        'note': ('메인센터→거점 이고, 원/PLT 직접입력 (A27). '
+                 '배송비 모드③ 연동 단가에는 이고비가 이미 포함 — 중복 계상 금지')
+                if st['transfer'] else '이고 없음 (단일 센터 직배)',
     }
 
     # ── 배송비 (§5.3) ───────────────────────────────────────────────────────
@@ -171,7 +201,7 @@ def compute(s, params, processes, region_rates, delivery):
     elif mode == 'link':
         dmin = float(delivery.get('link_min') or 0)
         dmax = float(delivery.get('link_max') or dmin)
-        dnote = '배송비단가시스템(delivery_pricing) 연동값'
+        dnote = '배송비단가시스템(delivery_pricing) 연동값 (직송+이고+용차 포함)'
     deliv = {'mode': mode, 'min': round(dmin, 1), 'max': round(dmax, 1), 'note': dnote}
 
     # ── 최종 단가 (§5.4) ────────────────────────────────────────────────────
@@ -179,8 +209,9 @@ def compute(s, params, processes, region_rates, delivery):
     def _final(cpb):
         return cpb * markup
 
-    cost_min = work_cpb + storage_cpb + dmin
-    cost_max = work_cpb + storage_cpb + dmax
+    base_cpb = inbound_cpb + outbound_cpb + storage_cpb + transfer_cpb
+    cost_min = base_cpb + dmin
+    cost_max = base_cpb + dmax
     final = {
         'markup': round(markup, 4),
         'cost_cpb_min': round(cost_min, 1), 'cost_cpb_max': round(cost_max, 1),
@@ -190,25 +221,55 @@ def compute(s, params, processes, region_rates, delivery):
         'monthly_revenue_max': round(_final(cost_max) * monthly_box),
     }
 
-    # 항목별 견적 단가표 (청구단위 분해 — §5.4)
-    in_procs  = [r for r in proc_rows if r['flow'] == '입고']
-    out_procs = [r for r in proc_rows if r['flow'] == '출고']
-    inbound_cost_plt = sum(r['unit_cost'] if r['unit'] == 'PLT' else r['unit_cost'] * bpp
-                           for r in in_procs) * (1 + params['overhead_rate'])
-    outbound_cost_box = (sum(r['cost_per_box'] for r in out_procs)
-                         * (1 + params['overhead_rate']) + supplies_cpb)
-    tariff = [
-        {'item': '입고비',  'unit': '원/PLT',   'cost': round(inbound_cost_plt),
-         'price': round(_final(inbound_cost_plt))},
-        {'item': '출고비',  'unit': '원/BOX',   'cost': round(outbound_cost_box, 1),
-         'price': round(_final(outbound_cost_box), 1)},
-        {'item': '보관비',  'unit': '원/PLT·월', 'cost': storage['plt_month_rate'],
-         'price': round(_final(storage['plt_month_rate']))},
-        {'item': '배송비',  'unit': '원/BOX',
-         'cost': (f"{deliv['min']:,.0f}~{deliv['max']:,.0f}" if deliv['max'] > deliv['min'] else round(deliv['min'], 1)),
-         'price': (f"{_final(deliv['min']):,.0f}~{_final(deliv['max']):,.0f}"
-                   if deliv['max'] > deliv['min'] else round(_final(deliv['min']), 1))},
+    # ── 물류 흐름 스테이지 (화면·견적서의 기본 구조) ─────────────────────────
+    def _stage_items_proc(rows):
+        return [{'label': f"{r['name']} ({r['productivity']}{r['unit']}/시)",
+                 'value': f"{r['unit_cost']:,.0f}원/{r['unit']}"} for r in rows]
+
+    d_price = (f"{_final(dmin):,.0f}~{_final(dmax):,.0f}" if dmax > dmin
+               else f"{_final(dmin):,.0f}")
+    stages_out = [
+        {'key': 'inbound', 'name': '입고 작업비', 'icon': 'bi-box-arrow-in-down',
+         'enabled': bool(in_procs), 'unit': '원/PLT',
+         'cost': round(inbound_plt_rate), 'price': round(_final(inbound_plt_rate)),
+         'cpb': round(inbound_cpb, 2),
+         'items': _stage_items_proc(in_procs) + [{'label': f"간접배부 {params['overhead_rate']:.0%}", 'value': ''}],
+         'off_reason': '입고 공정 없음'},
+        {'key': 'storage', 'name': '보관비', 'icon': 'bi-building',
+         'enabled': storage['enabled'], 'unit': '원/PLT·월',
+         'cost': storage['plt_month_rate'], 'price': round(_final(storage['plt_month_rate'])),
+         'cpb': storage['cost_per_box'],
+         'items': [{'label': f"공간 (유효 {storage['eff_plt_per_py']}PLT/평)", 'value': f"{storage['space_rate']:,}원"},
+                   {'label': '파렛트 렌탈', 'value': f"{storage['pallet_month']:,}원"},
+                   {'label': '지게차 배부', 'value': f"{storage['forklift_alloc']:,}원"},
+                   {'label': f"평균재고 {storage['avg_stock_plt']:,}PLT · {storage['need_py']:,}평", 'value': ''}],
+         'off_reason': '보관 미사용 (크로스도킹)'},
+        {'key': 'outbound', 'name': '출고 작업비', 'icon': 'bi-box-arrow-up',
+         'enabled': bool(out_procs), 'unit': '원/BOX',
+         'cost': round(outbound_cpb, 1), 'price': round(_final(outbound_cpb), 1),
+         'cpb': round(outbound_cpb, 2),
+         'items': _stage_items_proc(out_procs) + [
+             {'label': f"간접배부 {params['overhead_rate']:.0%} + 소모품", 'value': f"{supplies_cpb:,.0f}원/BOX"}],
+         'off_reason': '출고 공정 없음'},
+        {'key': 'transfer', 'name': '이고비', 'icon': 'bi-arrow-left-right',
+         'enabled': transfer['enabled'], 'unit': '원/PLT',
+         'cost': transfer['per_plt'], 'price': round(_final(transfer_per_plt), 1),
+         'cpb': transfer['cost_per_box'],
+         'items': [{'label': '메인센터 → 거점 횡지', 'value': f"{transfer['per_plt']:,}원/PLT"}],
+         'off_reason': '이고 없음 (단일 센터)'},
+        {'key': 'delivery', 'name': '배송비', 'icon': 'bi-truck',
+         'enabled': (dmax > 0 or dmin > 0), 'unit': '원/BOX',
+         'cost': (f"{dmin:,.0f}~{dmax:,.0f}" if dmax > dmin else round(dmin, 1)),
+         'price': (d_price if dmax > dmin else round(_final(dmin), 1)),
+         'cpb': round((dmin + dmax) / 2, 2),
+         'items': [{'label': {'manual': '직접입력', 'region': '권역 단가표 가중평균', 'link': '배송시스템 연동'}[mode],
+                    'value': f"{dmin:,.0f}~{dmax:,.0f}원" if dmax > dmin else f"{dmin:,.0f}원"}],
+         'off_reason': '배송단가 미입력'},
     ]
+
+    # 항목별 견적 단가표 = 사용 중인 스테이지 (§5.4)
+    tariff = [{'item': sg['name'], 'unit': sg['unit'], 'cost': sg['cost'], 'price': sg['price']}
+              for sg in stages_out if sg['enabled']]
 
     # ── 민감도 (§5.5) ───────────────────────────────────────────────────────
     sens = []
@@ -219,27 +280,32 @@ def compute(s, params, processes, region_rates, delivery):
     ]:
         v  = f.get('volume', 1.0)
         pr = f.get('prod', 1.0)
-        st = f.get('stock', 1.0)
+        stk = f.get('stock', 1.0)
         oc = f.get('occ')
-        w2 = direct_cpb / pr * (1 + params['overhead_rate']) + supplies_cpb
-        eff2 = params['plt_per_py'] * (oc if oc is not None else params['occupancy'])
-        rate2 = ((params['rent_per_py'] + params['mgmt_per_py']) / eff2
-                 + params['pallet_month'] + forklift_alloc) if eff2 else 0
-        # 물동이 변해도 재고는 그대로면 박스당 보관 배부가 변한다 (§6.6 순환성)
-        st2 = rate2 * (avg_stock * st) / (monthly_box * v)
-        c2 = w2 + st2 + (dmin + dmax) / 2
+        w2 = direct_cpb / pr * oh + supplies_cpb
+        if st['storage']:
+            eff2 = params['plt_per_py'] * (oc if oc is not None else params['occupancy'])
+            rate2 = ((params['rent_per_py'] + params['mgmt_per_py']) / eff2
+                     + params['pallet_month'] + forklift_alloc) if eff2 else 0
+            # 물동이 변해도 재고는 그대로면 박스당 보관 배부가 변한다 (§6.6 순환성)
+            st2 = rate2 * (avg_stock * stk) / (monthly_box * v)
+        else:
+            st2 = 0.0
+        c2 = w2 + st2 + transfer_cpb + (dmin + dmax) / 2
         sens.append({'label': label,
                      'cost_cpb': round(c2, 1),
                      'price_cpb': round(_final(c2), 1),
                      'delta_pct': round((c2 / ((cost_min + cost_max) / 2) - 1) * 100, 1)})
 
     return {
+        'stages': stages_out,
         'work': {'processes': proc_rows, 'direct_cpb': round(direct_cpb, 2),
                  'overhead_rate': params['overhead_rate'],
                  'supplies_cpb': round(supplies_cpb, 2),
                  'cost_per_box': round(work_cpb, 2)},
         'manpower': manpower,
         'storage': storage,
+        'transfer': transfer,
         'delivery': deliv,
         'final': final,
         'tariff': tariff,
