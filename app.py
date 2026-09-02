@@ -79,6 +79,8 @@ def _stage_conf(overrides):
         'storage': overrides.get('use_storage', '1') != '0',
         'transfer': overrides.get('use_transfer', '0') == '1',
         'transfer_per_plt': _f('transfer_per_plt'),
+        'parcel': overrides.get('use_parcel', '0') == '1',
+        'parcel_cost': _f('parcel_cost'),
     }, excluded
 
 
@@ -293,13 +295,14 @@ def quote_override(qid):
     if request.form.get('stage_form'):      # 체크박스는 미체크 시 미전송 → marker로 일괄 재구성
         overrides['use_storage'] = '1' if request.form.get('use_storage') else '0'
         overrides['use_transfer'] = '1' if request.form.get('use_transfer') else '0'
+        overrides['use_parcel'] = '1' if request.form.get('use_parcel') else '0'
         for k in [k for k in overrides if k.startswith('proc_off:')]:
             overrides.pop(k)
         for k in request.form:
             if k.startswith('proc_off:'):
                 overrides[k] = '1'
     for k, v in request.form.items():
-        if k in ('csrf', 'stage_form', 'use_storage', 'use_transfer') or k.startswith('proc_off:'):
+        if k in ('csrf', 'stage_form', 'use_storage', 'use_transfer', 'use_parcel') or k.startswith('proc_off:'):
             continue
         v = v.strip()
         if k.startswith(('p:', 'param:')):
@@ -308,7 +311,7 @@ def quote_override(qid):
             else:
                 overrides[k] = v
         elif k in ('delivery_mode', 'manual_min', 'manual_max', 'transfer_per_plt',
-                   'direct_min', 'direct_max', 'joint_min', 'joint_max', 'memo'):
+                   'direct_min', 'direct_max', 'joint_min', 'joint_max', 'parcel_cost', 'memo'):
             if k == 'memo':
                 q.memo = v
             elif v == '':

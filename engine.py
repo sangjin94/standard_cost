@@ -33,6 +33,7 @@ PARAM_DEFS = [
     ('wrap_per_plt',        500, '랩핑 소모품', '원/PLT', '간접', 'A22', '화주 사급이면 0'),
     ('label_per_box',        30, '출고 라벨·테이프', '원/BOX', '간접', 'A22', ''),
     ('direct_plt_threshold', 3.0, '직송 기준 PLT (점포·일)', 'PLT', '배송', 'A28', '점포·일 물량이 이 PLT 이상이면 직송, 미만이면 이고+공동배송'),
+    ('parcel_box_threshold',   3, '택배 기준 BOX (점포·일)', 'BOX', '배송', 'A29', '택배 사용 화주만: 점포·일 물량이 이 박스수 이하면 택배'),
     ('overhead_rate',      0.18, '간접배부율', '', '간접', 'A21', '관리인력·전산 배부. 고정인력 별도 계상 시 낮출 것'),
     ('admin_rate',         0.07, '일반관리비율', '', '간접', 'A23', '본사 배부'),
     ('margin_rate',        0.10, '목표이익률', '', '간접', 'A24', '단가 = 원가 ÷ (1−이익률)'),
@@ -56,7 +57,8 @@ REGION_DEFS = [
     ('제주', 1200),
 ]
 
-DEFAULT_STAGES = {'storage': True, 'transfer': False, 'transfer_per_plt': 0.0}
+DEFAULT_STAGES = {'storage': True, 'transfer': False, 'transfer_per_plt': 0.0,
+                  'parcel': False, 'parcel_cost': 0.0}
 
 
 def hourly_cost(params, worker_type):
@@ -258,26 +260,46 @@ def compute(s, params, processes, region_rates, delivery, stages=None):
     dnote = ''
     dv_trace = []
     direct_pct = min(max(float(s.get('direct_share_pct') or 0), 0.0), 100.0)
-    joint_share = 1.0 - direct_pct / 100.0
+    # 택배 (A29): 사용 화주만, 점포·일 소량 물량을 외부 택배사 원가로 처리
+    parcel_pct = 0.0
+    parcel_cost = float(st.get('parcel_cost') or 0)
+    if st.get('parcel'):
+        parcel_pct = min(max(float(s.get('parcel_share_pct') or 0), 0.0), 100.0 - direct_pct)
+    joint_share = max(1.0 - direct_pct / 100.0 - parcel_pct / 100.0, 0.0)
     d_split = None
     if mode == 'split':
         dr_min = float(delivery.get('direct_min') or 0)
         dr_max = float(delivery.get('direct_max') or dr_min)
         jt_min = float(delivery.get('joint_min') or 0)
         jt_max = float(delivery.get('joint_max') or jt_min)
-        dmin = direct_pct / 100.0 * dr_min + joint_share * jt_min
-        dmax = direct_pct / 100.0 * dr_max + joint_share * jt_max
+        pc = parcel_pct / 100.0 * parcel_cost
+        dmin = direct_pct / 100.0 * dr_min + joint_share * jt_min + pc
+        dmax = direct_pct / 100.0 * dr_max + joint_share * jt_max + pc
         dnote = (f"직송 {direct_pct:.0f}% × {dr_min:,.0f}~{dr_max:,.0f}원 "
-                 f"+ 공동배송 {100-direct_pct:.0f}% × {jt_min:,.0f}~{jt_max:,.0f}원 (A28)")
+                 + (f"+ 택배 {parcel_pct:.0f}% × {parcel_cost:,.0f}원 " if st.get('parcel') else '')
+                 + f"+ 공동배송 {joint_share*100:.0f}% × {jt_min:,.0f}~{jt_max:,.0f}원 (A28·A29)")
         d_split = {'direct_pct': round(direct_pct, 1),
                    'direct_min': dr_min, 'direct_max': dr_max,
-                   'joint_min': jt_min, 'joint_max': jt_max}
-        dv_trace.append({'label': '직송 물량 비율 (A28)',
-                         'expr': f"점포·일 물량 ≥ {params['direct_plt_threshold']}PLT인 물량 ÷ 총 물량 (출고내역에서 추출)",
-                         'val': f"직송 {direct_pct:.1f}% / 공동배송 {100-direct_pct:.1f}%"})
+                   'joint_min': jt_min, 'joint_max': jt_max,
+                   'parcel_pct': round(parcel_pct, 1), 'parcel_cost': parcel_cost,
+                   'joint_pct': round(joint_share * 100, 1)}
+        _split_lbl = f"직송 {direct_pct:.1f}%"
+        if st.get('parcel'):
+            _split_lbl += f" / 택배 {parcel_pct:.1f}%"
+        _split_lbl += f" / 공동배송 {joint_share*100:.1f}%"
+        dv_trace.append({'label': '물량 분류 (A28·A29)',
+                         'expr': f"점포·일 ≥ {params['direct_plt_threshold']}PLT → 직송"
+                                 + (f" · ≤ {params['parcel_box_threshold']:.0f}BOX → 택배" if st.get('parcel') else '')
+                                 + " · 나머지 → 이고+공동배송 (출고내역에서 추출)",
+                         'val': _split_lbl})
+        if st.get('parcel'):
+            dv_trace.append({'label': '택배 원가 (A29)',
+                             'expr': f"외부 택배사 계약원가 {parcel_cost:,.0f}원/BOX × 택배 {parcel_pct:.0f}%",
+                             'val': f"{pc:,.1f}원/BOX"})
         dv_trace.append({'label': '배송비 가중평균',
                          'expr': (f"{direct_pct:.0f}% × 직송 {dr_min:,.0f}~{dr_max:,.0f}원"
-                                  f" + {100-direct_pct:.0f}% × 공동 {jt_min:,.0f}~{jt_max:,.0f}원"),
+                                  + (f" + {parcel_pct:.0f}% × 택배 {parcel_cost:,.0f}원" if st.get('parcel') else '')
+                                  + f" + {joint_share*100:.0f}% × 공동 {jt_min:,.0f}~{jt_max:,.0f}원"),
                          'val': f"{dmin:,.1f}~{dmax:,.1f}원/BOX"})
     elif mode == 'region':
         share = s.get('region_share') or {}
@@ -400,9 +422,11 @@ def compute(s, params, processes, region_rates, delivery, stages=None):
          'monthly_min': round(_final(dv_cost_min) * monthly_box),
          'monthly_max': round(_final(dv_cost_max) * monthly_box),
          'items': ([{'label': f"직송 {d_split['direct_pct']}% (점포·일 ≥ {params['direct_plt_threshold']}PLT)",
-                     'value': f"{d_split['direct_min']:,.0f}~{d_split['direct_max']:,.0f}원"},
-                    {'label': f"공동배송 {round(100-d_split['direct_pct'],1)}%",
-                     'value': f"{d_split['joint_min']:,.0f}~{d_split['joint_max']:,.0f}원"}]
+                     'value': f"{d_split['direct_min']:,.0f}~{d_split['direct_max']:,.0f}원"}]
+                   + ([{'label': f"택배 {d_split['parcel_pct']}% (외부 택배사 원가)",
+                        'value': f"{d_split['parcel_cost']:,.0f}원"}] if st.get('parcel') else [])
+                   + [{'label': f"공동배송 {d_split['joint_pct']}%",
+                       'value': f"{d_split['joint_min']:,.0f}~{d_split['joint_max']:,.0f}원"}]
                    if d_split else
                    [{'label': {'manual': '직접입력(단일)', 'region': '권역 단가표 가중평균',
                                'link': '배송시스템 연동'}[mode],

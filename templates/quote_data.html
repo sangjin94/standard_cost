@@ -70,6 +70,7 @@
         ('orders_per_day', '일평균 주문수', '건'),
         ('box_per_order', '주문당 박스', 'BOX'),
         ('direct_share_pct', '직송 물량 비율', '%'),
+        ('parcel_share_pct', '택배 물량 비율', '%'),
       ] %}
       <div class="col-md-3">
         <label class="form-label mb-1">{{ label }} <span class="text-muted fw-normal">({{ unit }})</span>
@@ -87,7 +88,8 @@
       <div class="col-md-4">재고: {{ s.stock_source }}</div>
       <div class="col-md-4">입고: {{ s.inbound_source }}</div>
     </div>
-    <div class="mt-1 small text-muted">직송 비율: 점포·일 물량이 직송 기준 PLT(현재 {{ params.direct_plt_threshold }}) 이상인 물량 비중 — 배송비를 직송/공동배송으로 나눌 때 사용 (A28)</div>
+    <div class="mt-1 small text-muted">물량 분류(A28·A29): 점포·일 ≥ 직송기준 {{ params.direct_plt_threshold }}PLT → 직송 ·
+      ≤ 택배기준 {{ params.parcel_box_threshold|int }}BOX → 택배(사용 화주만) · 나머지 → 이고+공동배송</div>
     {% if s.region_share %}
     <div class="mt-2 small">
       <span class="text-muted">권역 분포(주소 커버 {{ s.region_box_pct }}%):</span>

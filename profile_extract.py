@@ -399,14 +399,21 @@ def summarize(profile, params):
     region = ship.get('region') or {}
     region_box = sum(region.values())
 
-    # 직송/공동배송 분리 (A28): 점포·일 물량 PLT ≥ 기준이면 직송
+    # 직송/택배/공동배송 분리 (A28·A29): 점포·일 물량 기준 3분류
+    #   PLT ≥ 직송기준 → 직송 / BOX ≤ 택배기준 → 택배 / 나머지 → 이고+공동배송
     sd_hist = ship.get('storeday_hist') or {}
     direct_share_pct = None
+    parcel_share_pct = 0.0
     if sd_hist:
         thr_box = params.get('direct_plt_threshold', 3.0) * (total_box / est_total_plt
                                                              if est_total_plt > 0 else rep_ppb)
         direct_box = sum(t for k, (c, t) in sd_hist.items() if float(k) >= thr_box)
         direct_share_pct = round(direct_box / total_box * 100, 1) if total_box else 0.0
+        pb_thr = params.get('parcel_box_threshold', 0) or 0
+        if pb_thr > 0 and total_box:
+            parcel_box = sum(t for k, (c, t) in sd_hist.items()
+                             if float(k) <= pb_thr and float(k) < thr_box)
+            parcel_share_pct = round(parcel_box / total_box * 100, 1)
 
     return {
         'period_from': dates[0], 'period_to': dates[-1],
@@ -427,6 +434,7 @@ def summarize(profile, params):
         'in_box_per_day': round(in_box_per_day, 1),
         'inbound_source': inbound_source,
         'direct_share_pct': direct_share_pct if direct_share_pct is not None else 0.0,
+        'parcel_share_pct': parcel_share_pct,
         'has_storeday': bool(sd_hist),
         'region_share': {k: round(v / region_box * 100, 1) for k, v in
                          sorted(region.items(), key=lambda kv: -kv[1])} if region_box else {},

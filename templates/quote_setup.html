@@ -92,9 +92,23 @@
                 <input name="joint_max" class="form-control" placeholder="max" value="{{ overrides.get('joint_max','') }}">
               </div>
             </div>
+            <div class="border-start ps-3">
+              <div class="form-check form-switch mb-1">
+                <input class="form-check-input" type="checkbox" name="use_parcel" id="useParcel"
+                       {% if stage_conf[0].parcel %}checked{% endif %}>
+                <label class="form-check-label small fw-semibold" for="useParcel"><i class="bi bi-box2 me-1"></i>택배 사용 (A29)</label>
+              </div>
+              <div class="input-group input-group-sm" style="width:210px">
+                <input name="parcel_cost" class="form-control" placeholder="택배사 계약원가" value="{{ overrides.get('parcel_cost','') }}">
+                <span class="input-group-text">원/BOX</span>
+              </div>
+              <div class="small text-muted mt-1">점포·일 ≤ {{ params.parcel_box_threshold|int }}BOX 물량
+                ({{ s.parcel_share_pct }}%) → 외부 택배사 원가로 처리</div>
+            </div>
           </div>
-          <div class="small text-muted mt-2">배송비 = 직송 {{ s.direct_share_pct }}% × 직송단가 + 공동배송 {{ (100 - s.direct_share_pct)|round(1) }}% × 공동배송단가.
-            이고를 켜면 이고비는 공동배송 물량에만 추가됩니다.
+          <div class="small text-muted mt-2">배송비 = 직송 {{ s.direct_share_pct }}% × 직송단가
+            {% if stage_conf[0].parcel %}+ 택배 {{ s.parcel_share_pct }}% × 택배원가{% endif %}
+            + 공동배송 나머지 × 공동배송단가. 이고를 켜면 이고비는 공동배송 물량에만 추가됩니다.
             {% if not s.has_storeday %}<b class="text-danger">※ 이전 버전으로 업로드된 데이터라 직송 비율 자동 추출이 없습니다 — 출고내역을 다시 업로드하거나 ①화면에서 비율을 직접 보정하세요.</b>{% endif %}</div>
         </div>
         <div id="dm-manual" class="d-none">
