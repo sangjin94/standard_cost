@@ -508,20 +508,35 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
          'trace': dv_trace, 'off_reason': '배송단가 미입력'},
     ]
 
+    # 항목별 예상 마진 = 견적 − 원가 (그중 일반관리비분 = 원가×a, 순이익분 = 견적×m)
+    for sg in stages_out:
+        sg['monthly_margin_min'] = sg['monthly_min'] - sg['monthly_cost_min']
+        sg['monthly_margin_max'] = sg['monthly_max'] - sg['monthly_cost_max']
+        sg['margin_unit_min'] = round(sg['cost_min'] * (markup - 1), 1)
+        sg['margin_unit_max'] = round(sg['cost_max'] * (markup - 1), 1)
+
     # ── 견적 단가표 = 4항목 (종합단가 없음, §5.4) ────────────────────────────
     tariff = [{'item': ('배송비 [이고+배송]' if (sg['key'] == 'delivery' and st['transfer']) else sg['name']),
                'unit': sg['unit'], 'volume': sg['volume_label'],
                'cost': sg['cost'], 'price': sg['price'],
+               'margin_unit': _rng(sg['margin_unit_min'], sg['margin_unit_max'], 0),
+               'monthly_margin': _rng(sg['monthly_margin_min'], sg['monthly_margin_max'], 0),
                'monthly': _rng(sg['monthly_min'], sg['monthly_max'], 0)}
               for sg in stages_out if sg['enabled']]
 
     monthly_min = sum(sg['monthly_min'] for sg in stages_out if sg['enabled'])
     monthly_max = sum(sg['monthly_max'] for sg in stages_out if sg['enabled'])
+    _mc_min = sum(sg['monthly_cost_min'] for sg in stages_out if sg['enabled'])
+    _mc_max = sum(sg['monthly_cost_max'] for sg in stages_out if sg['enabled'])
     final = {'markup': round(markup, 4),
              'admin_rate': admin, 'margin_rate': margin,
-             'monthly_cost_min': sum(sg['monthly_cost_min'] for sg in stages_out if sg['enabled']),
-             'monthly_cost_max': sum(sg['monthly_cost_max'] for sg in stages_out if sg['enabled']),
+             'monthly_cost_min': _mc_min, 'monthly_cost_max': _mc_max,
              'monthly_revenue_min': monthly_min, 'monthly_revenue_max': monthly_max,
+             # 월 마진 = 청구액 − 원가. 분해: 일반관리비분 = 원가×a, 순이익분 = 청구액×m
+             'monthly_margin_min': monthly_min - _mc_min,
+             'monthly_margin_max': monthly_max - _mc_max,
+             'admin_amount_min': round(_mc_min * admin), 'admin_amount_max': round(_mc_max * admin),
+             'profit_amount_min': round(monthly_min * margin), 'profit_amount_max': round(monthly_max * margin),
              'monthly_box': monthly_box, 'in_plt_month': round(in_plt_month)}
 
     # ── 민감도 (§5.5) — 월 예상 청구액 기준 ─────────────────────────────────

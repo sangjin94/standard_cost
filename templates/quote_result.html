@@ -136,15 +136,23 @@
         <div class="d-flex justify-content-between small py-1 border-top pt-2">
           <span class="fw-bold">월 예상 청구액</span>
           <span class="fw-bold text-primary">{{ '{:,}'.format(result.final.monthly_revenue_min) }}{% if result.final.monthly_revenue_max != result.final.monthly_revenue_min %}~{{ '{:,}'.format(result.final.monthly_revenue_max) }}{% endif %}원</span></div>
+        <div class="d-flex justify-content-between small py-1" style="color:#b45309">
+          <span class="fw-bold">월 예상 마진 (청구액 − 원가)</span>
+          <span class="fw-bold">{{ '{:,}'.format(result.final.monthly_margin_min) }}{% if result.final.monthly_margin_max != result.final.monthly_margin_min %}~{{ '{:,}'.format(result.final.monthly_margin_max) }}{% endif %}원</span></div>
+        <div class="d-flex justify-content-between py-0" style="color:#b45309;font-size:.74rem">
+          <span class="ms-3">└ 일반관리비분 {{ (result.final.admin_rate * 100)|round(1) }}% / 순이익분 {{ (result.final.margin_rate * 100)|round(1) }}%</span>
+          <span>{{ '{:,}'.format(result.final.admin_amount_min) }}{% if result.final.admin_amount_max != result.final.admin_amount_min %}~{{ '{:,}'.format(result.final.admin_amount_max) }}{% endif %}
+            / {{ '{:,}'.format(result.final.profit_amount_min) }}{% if result.final.profit_amount_max != result.final.profit_amount_min %}~{{ '{:,}'.format(result.final.profit_amount_max) }}{% endif %}원</span></div>
       </div>
       <div class="card-body p-0"><div class="table-responsive">
         <table class="table table-sm mb-0 align-middle">
-          <thead><tr><th class="ps-3">항목</th><th>원가</th><th>견적단가</th><th class="text-end pe-3">월 예상 금액</th></tr></thead>
+          <thead><tr><th class="ps-3">항목</th><th>원가</th><th>견적단가</th><th>마진<div class="fw-normal" style="font-size:.68rem">단위 / 월</div></th><th class="text-end pe-3">월 예상 금액</th></tr></thead>
           <tbody>
           {% for t in result.tariff %}
             <tr><td class="ps-3 fw-semibold">{{ t.item }} <div class="text-muted fw-normal" style="font-size:.72rem">{{ t.unit }} · {{ t.volume }}</div></td>
                 <td class="text-muted">{{ '{:,}'.format(t.cost) if t.cost is number else t.cost }}</td>
                 <td class="text-primary fw-semibold">{{ '{:,}'.format(t.price) if t.price is number else t.price }}</td>
+                <td style="color:#b45309">+{{ t.margin_unit }}<div style="font-size:.7rem">월 {{ t.monthly_margin }}원</div></td>
                 <td class="text-end pe-3">{{ t.monthly }}원</td></tr>
           {% endfor %}
           </tbody>

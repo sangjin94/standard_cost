@@ -441,13 +441,18 @@ def quote_export(qid):
         ['견적명', q.name], ['화주사', q.customer_name or '-'],
         ['분석기간', f"{s['period_from']} ~ {s['period_to']} ({s['biz_days']}영업일)"],
         ['월평균 물동', f"{s['monthly_box']:,} BOX / {s['monthly_plt']:,} PLT"],
-        [], ['항목', '청구단위', '월 물동', '원가', '견적단가', '월 예상 금액'],
-    ] + [[t['item'], t['unit'], t['volume'], t['cost'], t['price'], t['monthly']] for t in r['tariff']] +         [[sg['name'], '미사용', sg['off_reason'], '', '', ''] for sg in r['stages'] if not sg['enabled']] + [
+        [], ['항목', '청구단위', '월 물동', '원가', '견적단가', '단위 마진', '월 마진', '월 예상 금액'],
+    ] + [[t['item'], t['unit'], t['volume'], t['cost'], t['price'],
+          t['margin_unit'], t['monthly_margin'], t['monthly']] for t in r['tariff']] +         [[sg['name'], '미사용', sg['off_reason'], '', '', '', '', ''] for sg in r['stages'] if not sg['enabled']] + [
         [], ['① 월 원가 합계 (마진 미포함)',
              f"{r['final']['monthly_cost_min']:,}~{r['final']['monthly_cost_max']:,} 원"],
         ['② 마진 적용', f"원가 × {r['final']['markup']} (일반관리비 {params['admin_rate']:.0%} 가산, 목표이익률 {params['margin_rate']:.0%} 반영)"],
         ['③ 월 예상 청구액',
          f"{r['final']['monthly_revenue_min']:,}~{r['final']['monthly_revenue_max']:,} 원"],
+        ['④ 월 예상 마진 (③−①)',
+         f"{r['final']['monthly_margin_min']:,}~{r['final']['monthly_margin_max']:,} 원 "
+         f"(일반관리비분 {r['final']['admin_amount_min']:,}~{r['final']['admin_amount_max']:,} / "
+         f"순이익분 {r['final']['profit_amount_min']:,}~{r['final']['profit_amount_max']:,})"],
         [], ['※ 견적은 종합단가 없이 위 항목별 단가로 구성됨 — docs/DESIGN.md 가정·한계 전제 (부가세 별도)'],
     ]
 
