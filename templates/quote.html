@@ -189,7 +189,7 @@
     <div class="card stat-card h-100">
       <div class="card-body text-center">
         <div class="cost-sub mb-1">종합 견적단가 (원/BOX)</div>
-        <div class="cost-highlight">
+        <div class="cost-highlight" {% if result.final.price_cpb_max != result.final.price_cpb_min %}style="font-size:1.3rem"{% endif %}>
           {{ '{:,}'.format(result.final.price_cpb_min) }}{% if result.final.price_cpb_max != result.final.price_cpb_min %} ~ {{ '{:,}'.format(result.final.price_cpb_max) }}{% endif %}
         </div>
         <div class="cost-sub">원가 {{ '{:,}'.format(result.final.cost_cpb_min) }}{% if result.final.cost_cpb_max != result.final.cost_cpb_min %}~{{ '{:,}'.format(result.final.cost_cpb_max) }}{% endif %} × 배율 {{ result.final.markup }}</div>
