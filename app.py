@@ -34,6 +34,11 @@ with app.app_context():
         for i, (name, flow, unit, prod, wt, memo) in enumerate(engine.PROCESS_DEFS):
             db.session.add(WorkProcess(name=name, flow=flow, unit=unit,
                                        productivity=prod, worker_type=wt, memo=memo, sort_order=i))
+    # 단순화로 제거된 파라미터를 기존 DB에서도 정리 (지게차·파렛트 — A30 추가 항목으로 대체)
+    for _k in engine.REMOVED_PARAM_KEYS:
+        _row = db.session.get(CostParam, _k)
+        if _row:
+            db.session.delete(_row)
     # 옵션 공정 '입고 검수' 보강 (기존 DB에도 1회 삽입, 기본 미사용 → 견적별 opt-in)
     if WorkProcess.query.count() > 0 and not WorkProcess.query.filter_by(name='입고 검수').first():
         db.session.add(WorkProcess(name='입고 검수', flow='입고', unit='BOX',

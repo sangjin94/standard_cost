@@ -27,9 +27,6 @@ PARAM_DEFS = [
     ('mgmt_per_py',        7000, '창고 관리비·수도광열', '원/평·월', '보관', 'A13', ''),
     ('plt_per_py',          3.5, '평당 유효 적재', 'PLT/평', '보관', 'A14', '랙 4단 기준. 평치는 1.5'),
     ('occupancy',          0.85, '목표 가동률', '', '보관', 'A15', '빈 자리도 원가다 — 만실 기준 금지'),
-    ('forklift_month',  1200000, '지게차 월비용(대당)', '원/월', '보관', 'A16', '리스+유지+충전'),
-    ('plt_per_forklift',   3000, '지게차 1대당 담당 PLT', 'PLT', '보관', 'A16', '월 처리 PLT 기준'),
-    ('pallet_month',        900, '파렛트 렌탈', '원/PLT·월', '보관', 'A25', '화주 사급이면 0'),
     ('wrap_per_plt',        500, '랩핑 소모품', '원/PLT', '간접', 'A22', '화주 사급이면 0'),
     ('label_per_box',        30, '출고 라벨·테이프', '원/BOX', '간접', 'A22', ''),
     ('direct_plt_threshold', 3.0, '직송 기준 PLT (점포·일)', 'PLT', '배송', 'A28', '점포·일 물량이 이 PLT 이상이면 직송, 미만이면 이고+공동배송'),
@@ -57,6 +54,8 @@ REGION_DEFS = [
     ('경북', 750), ('경남', 750), ('대구', 700), ('울산', 750), ('부산', 700),
     ('제주', 1200),
 ]
+
+REMOVED_PARAM_KEYS = ['forklift_month', 'plt_per_forklift', 'pallet_month']
 
 DEFAULT_STAGES = {'storage': True, 'transfer': False, 'transfer_per_plt': 0.0,
                   'parcel': False, 'parcel_cost': 0.0}
@@ -187,8 +186,9 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
     eff_plt_per_py = params['plt_per_py'] * params['occupancy']
     need_py = avg_stock / eff_plt_per_py if eff_plt_per_py else 0
     rate_space = (params['rent_per_py'] + params['mgmt_per_py']) / eff_plt_per_py if eff_plt_per_py else 0
-    forklift_alloc = (params['forklift_month'] / params['plt_per_forklift']) if params['plt_per_forklift'] else 0
-    plt_month_rate = rate_space + params['pallet_month'] + forklift_alloc + cust_sum['storage']
+    # 단순화 원칙: 보관비 = 임차료 + 관리비(수도광열)만. 파렛트·지게차 등은
+    # 필요한 화주만 '추가 원가 항목(A30, 보관)'으로 얹는다.
+    plt_month_rate = rate_space + cust_sum['storage']
     monthly_storage = plt_month_rate * avg_stock if st['storage'] else 0.0
     storage_cpb = (monthly_storage / monthly_box) if st['storage'] else 0.0
     stor_trace = [
@@ -198,17 +198,13 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
         {'label': '공간 단가 (A12·A13)',
          'expr': f"(임차 {_w(params['rent_per_py'])} + 관리 {_w(params['mgmt_per_py'])})원/평 ÷ {eff_plt_per_py:.2f}PLT/평",
          'val': f"{_w(rate_space)}원/PLT·월"},
-        {'label': '파렛트 렌탈 (A25)', 'expr': '', 'val': f"{_w(params['pallet_month'])}원/PLT·월"},
-        {'label': '지게차 배부 (A16)',
-         'expr': f"{_w(params['forklift_month'])}원 ÷ {_w(params['plt_per_forklift'])}PLT",
-         'val': f"{_w(forklift_alloc)}원/PLT·월"},
     ] + [
         {'label': f"추가 항목: {c['name']} (A30)",
          'expr': c.get('memo') or '원가 마스터의 사용자 정의 항목',
          'val': f"+{_w(c['value'])}원/PLT·월"} for c in cust['storage']
     ] + [
         {'label': '보관비 원가',
-         'expr': f"{_w(rate_space)} + {_w(params['pallet_month'])} + {_w(forklift_alloc)}"
+         'expr': f"{_w(rate_space)}"
                  + (f" + 추가 {_w(cust_sum['storage'])}" if cust_sum['storage'] else ''),
          'val': f"{_w(plt_month_rate)}원/PLT·월"},
         markup_trace,
@@ -223,8 +219,7 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
         'enabled': bool(st['storage']),
         'avg_stock_plt': avg_stock, 'need_py': round(need_py, 1),
         'eff_plt_per_py': round(eff_plt_per_py, 2),
-        'space_rate': round(rate_space), 'forklift_alloc': round(forklift_alloc),
-        'pallet_month': params['pallet_month'],
+        'space_rate': round(rate_space),
         'plt_month_rate': round(plt_month_rate),
         'plt_day_rate': round(plt_month_rate / 30.4, 1),
         'monthly_cost': round(monthly_storage),
@@ -456,9 +451,7 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
          'monthly_cost_min': round(monthly_storage), 'monthly_cost_max': round(monthly_storage),
          'monthly_min': round(_final(monthly_storage)),
          'monthly_max': round(_final(monthly_storage)),
-         'items': [{'label': f"공간 (유효 {storage['eff_plt_per_py']}PLT/평)", 'value': f"{storage['space_rate']:,}원"},
-                   {'label': '파렛트 렌탈', 'value': f"{storage['pallet_month']:,}원"},
-                   {'label': '지게차 배부', 'value': f"{storage['forklift_alloc']:,}원"},
+         'items': [{'label': f"임차+관리비 (유효 {storage['eff_plt_per_py']}PLT/평)", 'value': f"{storage['space_rate']:,}원"},
                    {'label': f"평균재고 {storage['avg_stock_plt']:,}PLT · {storage['need_py']:,}평", 'value': ''}]
                   + [{'label': c['name'], 'value': f"+{c['value']:,.0f}원"} for c in cust['storage']],
          'trace': stor_trace, 'off_reason': '보관 미사용 (크로스도킹)'},
@@ -556,8 +549,7 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
             rev += _final(inbound_core / pr + cust_sum['inbound']) * in_plt_month * v
         if st['storage']:
             eff2 = params['plt_per_py'] * (oc if oc is not None else params['occupancy'])
-            rate2 = ((params['rent_per_py'] + params['mgmt_per_py']) / eff2
-                     + params['pallet_month'] + forklift_alloc) if eff2 else 0
+            rate2 = ((params['rent_per_py'] + params['mgmt_per_py']) / eff2) if eff2 else 0
             rev += _final(rate2 + cust_sum['storage']) * avg_stock * stk
         if out_procs:
             rev += _final(outbound_direct_cpb / pr * (1 + oh) + supplies_cpb
