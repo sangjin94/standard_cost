@@ -36,7 +36,7 @@
     <div class="table-responsive">
     <table class="table table-hover mb-0">
       <thead><tr>
-        <th class="ps-3">견적명</th><th>화주사</th><th>확정 단가 (원/BOX)</th>
+        <th class="ps-3">견적명</th><th>화주사</th><th>확정 견적 (항목별 단가)</th>
         <th>월 예상 청구액</th><th>수정일</th><th style="width:180px"></th>
       </tr></thead>
       <tbody>
@@ -45,12 +45,12 @@
           <td class="ps-3"><a href="{{ url_for('quote_view', qid=r.q.id) }}" class="fw-semibold text-decoration-none">{{ r.q.name }}</a></td>
           <td>{{ r.q.customer_name or '-' }}</td>
           <td>
-            {% if r.saved %}
-              <span class="fw-semibold">{{ '{:,}'.format(r.saved.result.final.price_cpb_min) }}~{{ '{:,}'.format(r.saved.result.final.price_cpb_max) }}</span>
+            {% if r.saved and r.saved.result.tariff %}
+              {% for t in r.saved.result.tariff %}<span class="badge text-bg-light border me-1">{{ t.item }} {{ '{:,}'.format(t.price) if t.price is number else t.price }}</span>{% endfor %}
               <span class="text-muted small">({{ r.saved.saved_at }})</span>
             {% else %}<span class="text-muted">미확정</span>{% endif %}
           </td>
-          <td>{% if r.saved %}{{ '{:,}'.format(r.saved.result.final.monthly_revenue_min) }}~{{ '{:,}'.format(r.saved.result.final.monthly_revenue_max) }}원{% else %}-{% endif %}</td>
+          <td>{% if r.saved and r.saved.result.final.monthly_revenue_min is defined %}{{ '{:,}'.format(r.saved.result.final.monthly_revenue_min) }}{% if r.saved.result.final.monthly_revenue_max != r.saved.result.final.monthly_revenue_min %}~{{ '{:,}'.format(r.saved.result.final.monthly_revenue_max) }}{% endif %}원{% else %}-{% endif %}</td>
           <td class="text-muted small">{{ r.q.updated_at.strftime('%m-%d %H:%M') }}</td>
           <td class="text-end pe-3">
             <a class="btn btn-sm btn-outline-primary" href="{{ url_for('quote_view', qid=r.q.id) }}">열기</a>

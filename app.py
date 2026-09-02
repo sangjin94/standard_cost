@@ -425,36 +425,33 @@ def quote_export(qid):
         ['견적명', q.name], ['화주사', q.customer_name or '-'],
         ['분석기간', f"{s['period_from']} ~ {s['period_to']} ({s['biz_days']}영업일)"],
         ['월평균 물동', f"{s['monthly_box']:,} BOX / {s['monthly_plt']:,} PLT"],
-        [], ['항목', '청구단위', '원가', '견적단가'],
-    ] + [[t['item'], t['unit'], t['cost'], t['price']] for t in r['tariff']] +         [[sg['name'], '미사용', sg['off_reason'], ''] for sg in r['stages'] if not sg['enabled']] + [
-        [], ['종합 박스당 견적단가',
-             f"{r['final']['price_cpb_min']:,}~{r['final']['price_cpb_max']:,} 원/BOX"],
-        ['월 예상 청구액',
-         f"{r['final']['monthly_revenue_min']:,}~{r['final']['monthly_revenue_max']:,} 원"],
+        [], ['항목', '청구단위', '월 물동', '원가', '견적단가', '월 예상 금액'],
+    ] + [[t['item'], t['unit'], t['volume'], t['cost'], t['price'], t['monthly']] for t in r['tariff']] +         [[sg['name'], '미사용', sg['off_reason'], '', '', ''] for sg in r['stages'] if not sg['enabled']] + [
+        [], ['월 예상 청구액 합계',
+             f"{r['final']['monthly_revenue_min']:,}~{r['final']['monthly_revenue_max']:,} 원"],
         ['적용 배율', f"×{r['final']['markup']} (일반관리비 {params['admin_rate']:.0%}, 이익률 {params['margin_rate']:.0%})"],
-        [], ['※ 본 견적은 원가 기반 산정치이며, docs/DESIGN.md 의 가정·한계를 전제로 함 (부가세 별도)'],
+        [], ['※ 견적은 종합단가 없이 위 항목별 단가로 구성됨 — docs/DESIGN.md 가정·한계 전제 (부가세 별도)'],
     ]
 
-    cost_rows = [['[작업비]', '', '', '', '', ''],
-                 ['공정', '구분', '단위', '생산성(단위/인시)', '실부담시급', '박스당 원가']]
-    for p in r['work']['processes']:
-        cost_rows.append([p['name'], p['flow'], p['unit'], p['productivity'], p['wage'], p['cost_per_box']])
+    cost_rows = []
+    # 스테이지별 계산 추적(§5) — 화면 모달과 동일한 내용
+    for sg in r['stages']:
+        cost_rows.append([f"[{sg['name']}]",
+                          (f"{sg['price']:,}" if isinstance(sg['price'], (int, float)) else sg['price'])
+                          + f" {sg['unit']}" if sg['enabled'] else '미사용'])
+        if sg['enabled']:
+            cost_rows.append(['단계', '계산식 (실제 값 대입)', '결과'])
+            for t in sg['trace']:
+                cost_rows.append([t['label'], t['expr'], t['val']])
+        cost_rows.append([])
     cost_rows += [
-        ['직접작업비 합', '', '', '', '', r['work']['direct_cpb']],
-        [f"간접배부율 {r['work']['overhead_rate']:.0%} 가산 + 소모품 {r['work']['supplies_cpb']}", '', '', '', '',
-         r['work']['cost_per_box']],
+        ['[작업 공정]'], ['공정', '구분', '단위', '생산성(단위/인시)', '실부담시급', '일 인시'],
+    ] + [[p['name'], p['flow'], p['unit'], p['productivity'], p['wage'], p['day_manhours']]
+         for p in r['work']['processes']] + [
         [], ['[인력 소요]'], [r['manpower']['note']],
         ['평시 필요인원', r['manpower']['heads_avg'], '피크 필요인원', r['manpower']['heads_p95']],
-        [], ['[보관비]'],
-        ['평균재고', f"{r['storage']['avg_stock_plt']:,} PLT", '근거', r['storage']['stock_source']],
-        ['필요 평수', r['storage']['need_py'], '평당 유효적재', r['storage']['eff_plt_per_py']],
-        ['PLT·월 단가', r['storage']['plt_month_rate'], '월 보관비', r['storage']['monthly_cost']],
-        ['박스당 배부', r['storage']['cost_per_box']],
-        [], ['[배송비]'],
-        ['모드', r['delivery']['mode'], '단가', f"{r['delivery']['min']}~{r['delivery']['max']} 원/BOX"],
-        ['근거', r['delivery']['note']],
-        [], ['[민감도]'], ['시나리오', '원가/BOX', '견적/BOX', '기준 대비'],
-    ] + [[x['label'], x['cost_cpb'], x['price_cpb'], f"{x['delta_pct']:+}%"] for x in r['sensitivity']]
+        [], ['[민감도 — 월 예상 청구액 기준]'], ['시나리오', '월 청구액', '기준 대비'],
+    ] + [[x['label'], x['monthly'], f"{x['delta_pct']:+}%"] for x in r['sensitivity']]
 
     assum_rows = [['키', '값', '항목', '가정번호', '견적별 수정', '설명']]
     for c in CostParam.query.order_by(CostParam.sort_order).all():
