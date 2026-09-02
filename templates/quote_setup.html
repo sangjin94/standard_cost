@@ -1,0 +1,202 @@
+{% extends 'base.html' %}
+{% block title %}{{ q.name }} — 산정 조건{% endblock %}
+{% block content %}
+{% include '_quote_nav.html' %}
+
+{% if not s %}
+<div class="alert alert-warning"><i class="bi bi-exclamation-triangle me-1"></i>출고내역을 먼저 업로드하세요.
+  <a href="{{ url_for('quote_data', qid=q.id) }}">① 데이터 화면으로</a></div>
+{% else %}
+
+<form method="post" action="{{ url_for('quote_override', qid=q.id) }}">
+<input type="hidden" name="stage_form" value="1">
+<input type="hidden" name="next" value="result">
+
+<div class="card mb-4">
+  <div class="card-header"><i class="bi bi-diagram-3 me-1"></i> 물류 흐름 구성 (화주 특성 — A26·A27)</div>
+  <div class="card-body">
+    <div class="row g-3 align-items-start">
+      <div class="col-md-3">
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" name="use_storage" id="useStorage"
+                 {% if stage_conf[0].storage %}checked{% endif %}>
+          <label class="form-check-label fw-semibold" for="useStorage"><i class="bi bi-building me-1"></i>보관 사용</label>
+        </div>
+        <div class="small text-muted">끄면 보관비 제외 — 크로스도킹/통과형 화주. 적치 공정도 오른쪽에서 함께 제외하세요.</div>
+      </div>
+      <div class="col-md-3">
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" name="use_transfer" id="useTransfer"
+                 {% if stage_conf[0].transfer %}checked{% endif %}>
+          <label class="form-check-label fw-semibold" for="useTransfer"><i class="bi bi-arrow-left-right me-1"></i>이고(횡지) 사용</label>
+        </div>
+        <div class="input-group input-group-sm mt-1" style="max-width:220px">
+          <input name="transfer_per_plt" class="form-control" placeholder="이고 단가"
+                 value="{{ overrides.get('transfer_per_plt','') }}">
+          <span class="input-group-text">원/PLT</span>
+        </div>
+        <div class="small text-muted mt-1">배송 방식이 "직송/공동배송 분리"면 <b>공동배송 물량에만</b> 얹힙니다 (A27)</div>
+      </div>
+      <div class="col-md-6">
+        <div class="fw-semibold small mb-1"><i class="bi bi-tools me-1"></i>이 견적에서 쓸 작업 공정</div>
+        <div class="d-flex flex-wrap gap-3">
+          {% for p in all_processes %}
+          <div class="form-check">
+            <input class="form-check-input proc-keep" type="checkbox" id="pk{{ p.id }}"
+                   data-off-name="proc_off:{{ p.id }}"
+                   {% if p.id not in stage_conf[1] %}checked{% endif %}>
+            <label class="form-check-label small" for="pk{{ p.id }}">
+              <span class="badge text-bg-{{ 'info' if p.flow=='입고' else 'success' }}">{{ p.flow }}</span> {{ p.name }}</label>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="small text-muted mt-1">체크 해제 = 이 견적에서만 제외 (공정 자체는 <a href="{{ url_for('masters') }}">원가 마스터</a>에서 관리)</div>
+        <span id="procOffFields"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header"><i class="bi bi-truck me-1"></i> 배송 방식 (A18·A28)</div>
+  <div class="card-body">
+    <div class="row g-3">
+      <div class="col-md-3">
+        <label class="form-label">산정 방식</label>
+        <select name="delivery_mode" id="deliveryMode" class="form-select form-select-sm" onchange="showDeliveryMode()">
+          <option value="split"  {% if delivery.mode=='split'  %}selected{% endif %}>직송 / 이고+공동배송 분리</option>
+          <option value="manual" {% if delivery.mode=='manual' %}selected{% endif %}>단일 박스당 단가</option>
+          <option value="region" {% if delivery.mode=='region' %}selected{% endif %}>권역 단가표 × 물량분포</option>
+          <option value="link"   {% if delivery.mode=='link'   %}selected{% endif %}>배송비단가시스템 연동</option>
+        </select>
+      </div>
+      <div class="col-md-9">
+        <div id="dm-split" class="d-none">
+          <div class="d-flex flex-wrap gap-3 align-items-end">
+            <div>
+              <label class="form-label small mb-1">직송 물량 비율 (데이터 추출)</label>
+              <div class="fw-bold" style="font-size:1.05rem">{{ s.direct_share_pct }}%
+                <span class="text-muted small fw-normal">— 점포·일 ≥ {{ params.direct_plt_threshold }}PLT (A28, ①화면에서 보정 가능)</span></div>
+            </div>
+            <div>
+              <label class="form-label small mb-1">직송 단가 (원/BOX)</label>
+              <div class="input-group input-group-sm" style="width:210px">
+                <input name="direct_min" class="form-control" placeholder="min" value="{{ overrides.get('direct_min','') }}">
+                <input name="direct_max" class="form-control" placeholder="max" value="{{ overrides.get('direct_max','') }}">
+              </div>
+            </div>
+            <div>
+              <label class="form-label small mb-1">공동배송 단가 (원/BOX)</label>
+              <div class="input-group input-group-sm" style="width:210px">
+                <input name="joint_min" class="form-control" placeholder="min" value="{{ overrides.get('joint_min','') }}">
+                <input name="joint_max" class="form-control" placeholder="max" value="{{ overrides.get('joint_max','') }}">
+              </div>
+            </div>
+          </div>
+          <div class="small text-muted mt-2">배송비 = 직송 {{ s.direct_share_pct }}% × 직송단가 + 공동배송 {{ (100 - s.direct_share_pct)|round(1) }}% × 공동배송단가.
+            이고를 켜면 이고비는 공동배송 물량에만 추가됩니다.
+            {% if not s.has_storeday %}<b class="text-danger">※ 이전 버전으로 업로드된 데이터라 직송 비율 자동 추출이 없습니다 — 출고내역을 다시 업로드하거나 ①화면에서 비율을 직접 보정하세요.</b>{% endif %}</div>
+        </div>
+        <div id="dm-manual" class="d-none">
+          <label class="form-label small mb-1">전 물량 동일 박스당 단가 (원/BOX)</label>
+          <div class="input-group input-group-sm" style="width:210px">
+            <input name="manual_min" class="form-control" placeholder="min" value="{{ overrides.get('manual_min','') }}">
+            <input name="manual_max" class="form-control" placeholder="max" value="{{ overrides.get('manual_max','') }}">
+          </div>
+        </div>
+        <div id="dm-region" class="d-none small text-muted">
+          업로드된 주소의 권역 분포 × <a href="{{ url_for('masters') }}">권역 단가표</a> 가중평균으로 계산합니다
+          (주소 커버 {{ s.region_box_pct }}%).
+        </div>
+        <div id="dm-link" class="d-none">
+          {% if dp_available %}
+          <div class="small text-muted mb-1">
+            {% if overrides.get('link_customer') %}
+              연동됨: <b>{{ overrides.get('link_customer') }}</b> {{ overrides.get('link_min') }}~{{ overrides.get('link_max') }}원/BOX (직송+이고+용차 포함 → 이고 스테이지는 끄세요)
+            {% else %}미연동{% endif %}
+          </div>
+          <button type="button" class="btn btn-sm btn-outline-primary" onclick="loadDpCustomers()">
+            <i class="bi bi-plug me-1"></i>배송단가 시스템에서 불러오기</button>
+          <span id="dpBox" class="ms-1"></span>
+          {% else %}
+          <div class="small text-muted">delivery_pricing 폴더가 없어 연동을 쓸 수 없습니다.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header">
+    <a class="text-decoration-none" data-bs-toggle="collapse" href="#paramBox">
+      <i class="bi bi-sliders me-1"></i> 원가 파라미터 (견적별 보정) <i class="bi bi-chevron-down small"></i>
+    </a>
+    <span class="text-muted fw-normal small ms-2">기본값은 <a href="{{ url_for('masters') }}">원가 마스터</a>에서 관리 — 여기 입력값은 이 견적에만 적용</span>
+  </div>
+  <div id="paramBox" class="collapse">
+    <div class="card-body">
+      <div class="row g-2">
+        {% for c in param_rows %}
+        <div class="col-md-3">
+          <label class="form-label mb-1 small">{{ c.label }}
+            <span class="text-muted fw-normal">{{ c.unit or '' }} {% if c.assumption %}· {{ c.assumption }}{% endif %}</span>
+            {% if overrides.get('param:' + c.key) %}<span class="badge text-bg-info">보정됨</span>{% endif %}
+          </label>
+          <div class="input-group input-group-sm">
+            <span class="input-group-text" style="min-width:80px">{{ '{:,}'.format(params[c.key]|int) if params[c.key] == params[c.key]|int else params[c.key] }}</span>
+            <input name="param:{{ c.key }}" class="form-control" placeholder="보정값"
+                   value="{{ overrides.get('param:' + c.key, '') }}">
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  <div class="card-footer bg-white d-flex justify-content-between align-items-center">
+    <input name="memo" class="form-control form-control-sm me-2" style="max-width:420px"
+           placeholder="견적 메모" value="{{ q.memo or '' }}">
+    <button class="btn btn-primary"><i class="bi bi-calculator me-1"></i>저장하고 결과 보기 <i class="bi bi-arrow-right ms-1"></i></button>
+  </div>
+</div>
+</form>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+function showDeliveryMode() {
+  const m = document.getElementById('deliveryMode').value;
+  for (const k of ['split', 'manual', 'region', 'link'])
+    document.getElementById('dm-' + k).classList.toggle('d-none', k !== m);
+}
+showDeliveryMode();
+
+document.querySelector('form[action*="override"]')?.addEventListener('submit', function () {
+  const holder = document.getElementById('procOffFields');
+  holder.innerHTML = '';
+  document.querySelectorAll('.proc-keep').forEach(cb => {
+    if (!cb.checked) {
+      const h = document.createElement('input');
+      h.type = 'hidden'; h.name = cb.dataset.offName; h.value = '1';
+      holder.appendChild(h);
+    }
+  });
+});
+
+async function loadDpCustomers() {
+  const box = document.getElementById('dpBox');
+  box.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 불러오는 중… (최초 1분 가량)';
+  try {
+    const r = await fetch('{{ url_for("api_delivery_customers") }}');
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error);
+    let html = '<form method="post" action="{{ url_for("quote_link_delivery", qid=q.id) }}" class="d-inline-flex gap-1">';
+    html += '<select name="customer_id" class="form-select form-select-sm" style="width:auto">';
+    for (const c of j.customers) html += `<option value="${c.id}">${c.name} (${c.result_rows.toLocaleString()}행)</option>`;
+    html += '</select><button class="btn btn-sm btn-primary">연동</button></form>';
+    box.innerHTML = html;
+  } catch (e) { box.innerHTML = '<span class="text-danger small">연동 실패: ' + e.message + '</span>'; }
+}
+</script>
+{% endblock %}

@@ -138,6 +138,7 @@ def parse_shipments(df):
     daily = {}       # date_str → {'box','plt','orders':set,'lines','stores':set}
     product = {}     # code → box sum
     region = {}      # sido → box sum
+    storeday = {}    # (date,store) → box sum — 직송/공동배송 분리 판정용(A28)
     region_unknown = 0.0
     has_order_col = 'order_no' in df.columns
     total_box = 0.0
@@ -170,6 +171,9 @@ def parse_shipments(df):
         if prods[i]:
             product[prods[i]] = product.get(prods[i], 0.0) + b
 
+        sk = (ds, stores[i] or snames[i] or '?')
+        storeday[sk] = storeday.get(sk, 0.0) + b
+
         sd = sido_of(addrs[i])
         if sd:
             region[sd] = region.get(sd, 0.0) + b
@@ -178,6 +182,16 @@ def parse_shipments(df):
 
     if not daily:
         raise ValueError('유효한 행이 없습니다 (출고일자·박스수 확인).')
+
+    # (일자,점포) 물량을 정수 BOX 히스토그램으로 압축 — 직송 기준 PLT가 바뀌어도
+    # 재계산할 수 있도록 {박스수: [건수, 박스합]} 형태로 보관 (§3, A28)
+    sd_hist = {}
+    for _, bx in storeday.items():
+        key = str(int(round(bx)))
+        h = sd_hist.setdefault(key, [0, 0.0])
+        h[0] += 1
+        h[1] += bx
+    sd_hist = {k: [c, round(t, 1)] for k, (c, t) in sd_hist.items()}
 
     daily_out = {ds: {'box': round(v['box'], 1), 'plt': round(v['plt'], 2),
                       'orders': len(v['orders']), 'lines': v['lines'],
@@ -192,6 +206,7 @@ def parse_shipments(df):
         'total_box': round(total_box, 1),
         'total_plt_direct': round(total_plt_direct, 2),
         'plt_direct_box': round(plt_direct_box, 1),
+        'storeday_hist': sd_hist,
         'rows': int(len(df)), 'skipped': int(skipped),
         'has_order_col': bool(has_order_col),
         'pm_extra': pm_extra,           # 수주일보에서 얻은 PLT입수
@@ -384,6 +399,15 @@ def summarize(profile, params):
     region = ship.get('region') or {}
     region_box = sum(region.values())
 
+    # 직송/공동배송 분리 (A28): 점포·일 물량 PLT ≥ 기준이면 직송
+    sd_hist = ship.get('storeday_hist') or {}
+    direct_share_pct = None
+    if sd_hist:
+        thr_box = params.get('direct_plt_threshold', 3.0) * (total_box / est_total_plt
+                                                             if est_total_plt > 0 else rep_ppb)
+        direct_box = sum(t for k, (c, t) in sd_hist.items() if float(k) >= thr_box)
+        direct_share_pct = round(direct_box / total_box * 100, 1) if total_box else 0.0
+
     return {
         'period_from': dates[0], 'period_to': dates[-1],
         'biz_days': n_days, 'span_months': round(span_months, 2),
@@ -402,6 +426,8 @@ def summarize(profile, params):
         'in_plt_per_day': round(in_plt_per_day, 2),
         'in_box_per_day': round(in_box_per_day, 1),
         'inbound_source': inbound_source,
+        'direct_share_pct': direct_share_pct if direct_share_pct is not None else 0.0,
+        'has_storeday': bool(sd_hist),
         'region_share': {k: round(v / region_box * 100, 1) for k, v in
                          sorted(region.items(), key=lambda kv: -kv[1])} if region_box else {},
         'region_box_pct': round(region_box / total_box * 100, 1) if total_box else 0,

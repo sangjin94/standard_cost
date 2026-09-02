@@ -1,0 +1,107 @@
+{% extends 'base.html' %}
+{% block title %}{{ q.name }} — 데이터{% endblock %}
+{% block content %}
+{% include '_quote_nav.html' %}
+
+<div class="card mb-4">
+  <div class="card-header"><i class="bi bi-cloud-arrow-up me-1"></i> 데이터 업로드
+    <span class="text-muted fw-normal small ms-2">표준 양식(템플릿 다운로드) 또는 자사 수주일보 그대로</span>
+  </div>
+  <div class="card-body">
+    <div class="row g-3">
+      {% for kind, label, icon, required, status in [
+        ('ship', '출고내역', 'bi-box-seam', '필수', '업로드됨' if profile_meta.ship else None),
+        ('product', '상품마스터', 'bi-upc-scan', '권장', (profile_meta.pm|string + '개') if profile_meta.pm else None),
+        ('stock', '재고 스냅샷', 'bi-clipboard-data', '선택', (profile_meta.stock.days|string + '일 평균 ' + profile_meta.stock.avg_stock_plt|string + 'PLT') if profile_meta.stock else None),
+        ('inbound', '입고내역', 'bi-truck', '선택', (profile_meta.inbound.days|string + '일 실적') if profile_meta.inbound else None),
+      ] %}
+      <div class="col-md-3">
+        <div class="border rounded-3 p-3 h-100 {% if status %}border-success bg-success bg-opacity-10{% endif %}">
+          <div class="d-flex justify-content-between">
+            <div class="fw-semibold"><i class="bi {{ icon }} me-1"></i>{{ label }}</div>
+            <span class="badge {% if required=='필수' %}text-bg-danger{% elif required=='권장' %}text-bg-warning{% else %}text-bg-secondary{% endif %}">{{ required }}</span>
+          </div>
+          <div class="small my-2 {% if status %}text-success fw-semibold{% else %}text-muted{% endif %}">
+            {% if status %}<i class="bi bi-check-circle me-1"></i>{{ status }}{% else %}미업로드{% endif %}
+          </div>
+          <form method="post" action="{{ url_for('quote_upload', qid=q.id, kind=kind) }}" enctype="multipart/form-data">
+            <input type="file" name="file" class="form-control form-control-sm mb-2" accept=".xlsx,.xls,.csv" required>
+            <div class="d-flex gap-1">
+              <button class="btn btn-sm btn-primary flex-fill">업로드</button>
+              <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('template_download', kind=kind) }}" title="템플릿 다운로드"><i class="bi bi-file-earmark-arrow-down"></i></a>
+              {% if status %}
+              <button class="btn btn-sm btn-outline-danger" formaction="{{ url_for('quote_clear', qid=q.id, kind=kind) }}"
+                      formnovalidate onclick="return confirmDelete('{{ label }} 데이터를 삭제할까요?')"><i class="bi bi-trash"></i></button>
+              {% endif %}
+            </div>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+{% if err and not s %}
+<div class="alert alert-warning"><i class="bi bi-exclamation-triangle me-1"></i>{{ err }}</div>
+{% endif %}
+
+{% if s %}
+{% for w in s.warnings %}
+<div class="alert alert-warning py-2 small mb-2"><i class="bi bi-exclamation-triangle me-1"></i>{{ w }}</div>
+{% endfor %}
+
+<form method="post" action="{{ url_for('quote_override', qid=q.id) }}">
+<input type="hidden" name="next" value="data">
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between">
+    <span><i class="bi bi-graph-up me-1"></i> 물동 프로파일 <span class="text-muted fw-normal small">— 데이터 추출값. 보정칸에 입력하면 그 값으로 계산 (빈칸 = 추출값)</span></span>
+    <span class="text-muted small">{{ s.period_from }} ~ {{ s.period_to }} · {{ s.biz_days }}영업일 ({{ s.span_months }}개월)</span>
+  </div>
+  <div class="card-body">
+    <div class="row g-3">
+      {% for key, label, unit in [
+        ('monthly_box', '월평균 출고', 'BOX'),
+        ('avg_day_box', '일평균 출고', 'BOX'),
+        ('p95_day_box', '피크일(P95) 출고', 'BOX'),
+        ('boxes_per_plt', 'PLT입수 가중평균', 'BOX/PLT'),
+        ('avg_stock_plt', '평균재고', 'PLT'),
+        ('in_plt_per_day', '일평균 입고', 'PLT'),
+        ('orders_per_day', '일평균 주문수', '건'),
+        ('box_per_order', '주문당 박스', 'BOX'),
+        ('direct_share_pct', '직송 물량 비율', '%'),
+      ] %}
+      <div class="col-md-3">
+        <label class="form-label mb-1">{{ label }} <span class="text-muted fw-normal">({{ unit }})</span>
+          {% if key in s.overridden %}<span class="badge text-bg-info">보정됨</span>{% endif %}</label>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text" style="min-width:90px">{{ '{:,}'.format(s[key]) if s[key] is number else s[key] }}</span>
+          <input name="p:{{ key }}" class="form-control" placeholder="보정값"
+                 value="{{ overrides.get('p:' + key, '') }}">
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="row mt-3 small text-muted">
+      <div class="col-md-4">피크배율 <b>{{ s.peak_ratio }}</b> · 주문당 라인수 <b>{{ s.lines_per_order }}</b> · PLT입수 커버리지 <b>{{ s.ppb_coverage }}%</b></div>
+      <div class="col-md-4">재고: {{ s.stock_source }}</div>
+      <div class="col-md-4">입고: {{ s.inbound_source }}</div>
+    </div>
+    <div class="mt-1 small text-muted">직송 비율: 점포·일 물량이 직송 기준 PLT(현재 {{ params.direct_plt_threshold }}) 이상인 물량 비중 — 배송비를 직송/공동배송으로 나눌 때 사용 (A28)</div>
+    {% if s.region_share %}
+    <div class="mt-2 small">
+      <span class="text-muted">권역 분포(주소 커버 {{ s.region_box_pct }}%):</span>
+      {% for sido, pct in s.region_share.items() %}
+        <span class="badge text-bg-light border me-1">{{ sido }} {{ pct }}%</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  <div class="card-footer bg-white d-flex justify-content-between">
+    <button class="btn btn-outline-primary"><i class="bi bi-save me-1"></i>보정값 저장</button>
+    <a class="btn btn-primary" href="{{ url_for('quote_setup', qid=q.id) }}">다음: 산정 조건 <i class="bi bi-arrow-right ms-1"></i></a>
+  </div>
+</div>
+</form>
+{% endif %}
+{% endblock %}

@@ -30,6 +30,7 @@ PARAM_DEFS = [
     ('pallet_month',        900, '파렛트 렌탈', '원/PLT·월', '보관', 'A25', '화주 사급이면 0'),
     ('wrap_per_plt',        500, '랩핑 소모품', '원/PLT', '간접', 'A22', '화주 사급이면 0'),
     ('label_per_box',        30, '출고 라벨·테이프', '원/BOX', '간접', 'A22', ''),
+    ('direct_plt_threshold', 3.0, '직송 기준 PLT (점포·일)', 'PLT', '배송', 'A28', '점포·일 물량이 이 PLT 이상이면 직송, 미만이면 이고+공동배송'),
     ('overhead_rate',      0.18, '간접배부율', '', '간접', 'A21', '관리인력·전산 배부. 고정인력 별도 계상 시 낮출 것'),
     ('admin_rate',         0.07, '일반관리비율', '', '간접', 'A23', '본사 배부'),
     ('margin_rate',        0.10, '목표이익률', '', '간접', 'A24', '단가 = 원가 ÷ (1−이익률)'),
@@ -158,23 +159,28 @@ def compute(s, params, processes, region_rates, delivery, stages=None):
         'stock_source': s['stock_source'] if st['storage'] else '보관 미사용 화주 (크로스도킹/통과형) — A26',
     }
 
-    # ── 이고비 (§5.3-2, A27) — 선택 스테이지, 원/PLT 직접입력 ────────────────
-    transfer_per_plt = float(st.get('transfer_per_plt') or 0)
-    transfer_cpb = (transfer_per_plt / bpp) if st['transfer'] else 0.0
-    transfer = {
-        'enabled': bool(st['transfer']),
-        'per_plt': round(transfer_per_plt, 1),
-        'cost_per_box': round(transfer_cpb, 2),
-        'note': ('메인센터→거점 이고, 원/PLT 직접입력 (A27). '
-                 '배송비 모드③ 연동 단가에는 이고비가 이미 포함 — 중복 계상 금지')
-                if st['transfer'] else '이고 없음 (단일 센터 직배)',
-    }
-
-    # ── 배송비 (§5.3) ───────────────────────────────────────────────────────
+    # ── 배송비 (§5.3) — 직송/공동배송 혼합 구조 반영 (A28) ──────────────────
     mode = delivery.get('mode') or 'manual'
     dmin = dmax = 0.0
     dnote = ''
-    if mode == 'region':
+    direct_pct = min(max(float(s.get('direct_share_pct') or 0), 0.0), 100.0)
+    joint_share = 1.0 - direct_pct / 100.0
+    d_split = None
+    if mode == 'split':
+        # 직송 물량 × 직송단가 + 공동배송 물량 × 공동배송단가 (이고비는 별도 스테이지에서
+        # 공동배송 물량에만 얹힘). 비율은 점포·일 PLT ≥ A28 기준으로 데이터에서 추출.
+        dr_min = float(delivery.get('direct_min') or 0)
+        dr_max = float(delivery.get('direct_max') or dr_min)
+        jt_min = float(delivery.get('joint_min') or 0)
+        jt_max = float(delivery.get('joint_max') or jt_min)
+        dmin = direct_pct / 100.0 * dr_min + joint_share * jt_min
+        dmax = direct_pct / 100.0 * dr_max + joint_share * jt_max
+        dnote = (f"직송 {direct_pct:.0f}% × {dr_min:,.0f}~{dr_max:,.0f}원 "
+                 f"+ 공동배송 {100-direct_pct:.0f}% × {jt_min:,.0f}~{jt_max:,.0f}원 (A28)")
+        d_split = {'direct_pct': round(direct_pct, 1),
+                   'direct_min': dr_min, 'direct_max': dr_max,
+                   'joint_min': jt_min, 'joint_max': jt_max}
+    elif mode == 'region':
         share = s.get('region_share') or {}
         if not share:
             mode = 'manual'
@@ -202,7 +208,24 @@ def compute(s, params, processes, region_rates, delivery, stages=None):
         dmin = float(delivery.get('link_min') or 0)
         dmax = float(delivery.get('link_max') or dmin)
         dnote = '배송비단가시스템(delivery_pricing) 연동값 (직송+이고+용차 포함)'
-    deliv = {'mode': mode, 'min': round(dmin, 1), 'max': round(dmax, 1), 'note': dnote}
+    deliv = {'mode': mode, 'min': round(dmin, 1), 'max': round(dmax, 1),
+             'note': dnote, 'split': d_split}
+
+    # ── 이고비 (A27) — 선택 스테이지, 원/PLT 직접입력.
+    # split 모드에서는 이고를 타는 물량 = 공동배송 물량뿐이므로 그 비율만큼만 배부.
+    transfer_per_plt = float(st.get('transfer_per_plt') or 0)
+    tr_share = joint_share if mode == 'split' else 1.0
+    transfer_cpb = (transfer_per_plt / bpp * tr_share) if st['transfer'] else 0.0
+    transfer = {
+        'enabled': bool(st['transfer']),
+        'per_plt': round(transfer_per_plt, 1),
+        'share_pct': round(tr_share * 100, 1),
+        'cost_per_box': round(transfer_cpb, 2),
+        'note': (('공동배송 물량 ' + format(tr_share * 100, '.0f') + '%에만 적용 (직송은 이고 없음)'
+                  if mode == 'split' else '전체 물량 기준')
+                 + ' · 배송비 모드③ 연동 단가에는 이고비가 이미 포함 — 중복 금지 (A27)')
+                if st['transfer'] else '이고 없음 (단일 센터 직배)',
+    }
 
     # ── 최종 단가 (§5.4) ────────────────────────────────────────────────────
     markup = (1 + params['admin_rate']) / (1 - params['margin_rate'])
@@ -255,15 +278,23 @@ def compute(s, params, processes, region_rates, delivery, stages=None):
          'enabled': transfer['enabled'], 'unit': '원/PLT',
          'cost': transfer['per_plt'], 'price': round(_final(transfer_per_plt), 1),
          'cpb': transfer['cost_per_box'],
-         'items': [{'label': '메인센터 → 거점 횡지', 'value': f"{transfer['per_plt']:,}원/PLT"}],
+         'items': ([{'label': '메인센터 → 거점 횡지', 'value': f"{transfer['per_plt']:,}원/PLT"}]
+                   + ([{'label': '공동배송 물량에만 적용', 'value': f"{transfer['share_pct']}%"}]
+                      if mode == 'split' else [])),
          'off_reason': '이고 없음 (단일 센터)'},
         {'key': 'delivery', 'name': '배송비', 'icon': 'bi-truck',
          'enabled': (dmax > 0 or dmin > 0), 'unit': '원/BOX',
          'cost': (f"{dmin:,.0f}~{dmax:,.0f}" if dmax > dmin else round(dmin, 1)),
          'price': (d_price if dmax > dmin else round(_final(dmin), 1)),
          'cpb': round((dmin + dmax) / 2, 2),
-         'items': [{'label': {'manual': '직접입력', 'region': '권역 단가표 가중평균', 'link': '배송시스템 연동'}[mode],
-                    'value': f"{dmin:,.0f}~{dmax:,.0f}원" if dmax > dmin else f"{dmin:,.0f}원"}],
+         'items': ([{'label': f"직송 {d_split['direct_pct']}% (점포·일 ≥ {params['direct_plt_threshold']}PLT)",
+                      'value': f"{d_split['direct_min']:,.0f}~{d_split['direct_max']:,.0f}원"},
+                     {'label': f"공동배송 {round(100-d_split['direct_pct'],1)}% (이고+거점배송)",
+                      'value': f"{d_split['joint_min']:,.0f}~{d_split['joint_max']:,.0f}원"}]
+                    if d_split else
+                    [{'label': {'manual': '직접입력(단일)', 'region': '권역 단가표 가중평균',
+                                'link': '배송시스템 연동'}[mode],
+                      'value': f"{dmin:,.0f}~{dmax:,.0f}원" if dmax > dmin else f"{dmin:,.0f}원"}]),
          'off_reason': '배송단가 미입력'},
     ]
 

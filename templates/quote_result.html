@@ -1,0 +1,205 @@
+{% extends 'base.html' %}
+{% block title %}{{ q.name }} — 결과{% endblock %}
+{% block content %}
+{% include '_quote_nav.html' %}
+
+{% if err %}
+<div class="alert alert-warning"><i class="bi bi-exclamation-triangle me-1"></i>{{ err }}
+  {% if not s %}<a href="{{ url_for('quote_data', qid=q.id) }}">① 데이터 화면으로</a>{% endif %}</div>
+{% endif %}
+{% if s %}{% for w in s.warnings %}
+<div class="alert alert-warning py-2 small mb-2"><i class="bi bi-exclamation-triangle me-1"></i>{{ w }}</div>
+{% endfor %}{% endif %}
+
+{% if result %}
+<style>
+.flow-wrap { display:flex; align-items:stretch; gap:0; overflow-x:auto; padding:6px 2px 14px; }
+.flow-stage { min-width:200px; flex:1 1 0; }
+.flow-card { border-radius:14px; background:#fff; border:1.5px solid #d7e3e0; height:100%;
+             box-shadow:0 2px 10px rgba(19,78,74,.06); display:flex; flex-direction:column; overflow:hidden; }
+.flow-card.off { border-style:dashed; background:#f7f9f8; box-shadow:none; opacity:.62; }
+.flow-head { background:linear-gradient(135deg,#14b8a6,#0d9488); color:#fff; padding:.55rem .9rem;
+             font-weight:700; font-size:.9rem; display:flex; align-items:center; gap:.45rem; }
+.flow-card.off .flow-head { background:#94a3b8; }
+.flow-price { padding:.7rem .9rem .35rem; }
+.flow-price .v { font-size:1.25rem; font-weight:700; color:#134e4a; line-height:1.15; }
+.flow-price .u { font-size:.72rem; color:#64748b; }
+.flow-items { padding:.15rem .9rem .7rem; margin-top:auto; }
+.flow-items .it { display:flex; justify-content:space-between; gap:8px; font-size:.74rem;
+                  color:#475569; padding:.18rem 0; border-top:1px dashed #e2e8f0; }
+.flow-items .it:first-child { border-top:none; }
+.flow-cpb { background:#f0fdfa; border-top:1px solid #ccfbf1; padding:.35rem .9rem; font-size:.74rem; color:#0f766e; }
+.flow-card.off .flow-cpb { background:transparent; border-top:1px dashed #e2e8f0; color:#94a3b8; }
+.flow-link { display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:44px; color:#0d9488; }
+.flow-link .bi { font-size:1.25rem; }
+.flow-link .lbl { font-size:.62rem; color:#94a3b8; }
+.flow-link.dim { color:#cbd5e1; }
+</style>
+
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between">
+    <span><i class="bi bi-diagram-3 me-1"></i> 물류 프로세스별 단가</span>
+    <span class="text-muted small fw-normal">견적단가 기준 (원가 × {{ result.final.markup }}) · 흐리게 = 이 화주는 미사용</span>
+  </div>
+  <div class="card-body pb-2">
+    <div class="flow-wrap">
+      {% for sg in result.stages %}
+        {% if not loop.first %}
+        <div class="flow-link {% if not sg.enabled %}dim{% endif %}">
+          <i class="bi {{ 'bi-truck' if sg.key in ('transfer','delivery') else 'bi-arrow-right' }}"></i>
+          <span class="lbl">{{ {'storage':'입고','outbound':'보관 후','transfer':'센터간','delivery':'출하'}.get(sg.key,'') }}</span>
+        </div>
+        {% endif %}
+        <div class="flow-stage">
+          <div class="flow-card {% if not sg.enabled %}off{% endif %}">
+            <div class="flow-head"><i class="bi {{ sg.icon }}"></i>{{ sg.name }}
+              {% if not sg.enabled %}<span class="badge text-bg-light text-secondary ms-auto">미사용</span>{% endif %}</div>
+            <div class="flow-price">
+              {% if sg.enabled %}
+                <span class="v">{{ '{:,}'.format(sg.price) if sg.price is number else sg.price }}</span>
+                <span class="u"> {{ sg.unit }}</span>
+              {% else %}
+                <span class="u">{{ sg.off_reason }}</span>
+              {% endif %}
+            </div>
+            <div class="flow-items">
+              {% if sg.enabled %}{% for it in sg['items'] %}
+                <div class="it"><span>{{ it.label }}</span><span class="text-nowrap">{{ it.value }}</span></div>
+              {% endfor %}{% endif %}
+            </div>
+            <div class="flow-cpb">
+              {% if sg.enabled %}박스당 환산 {{ '{:,}'.format(sg.cpb) }}원{% else %}박스당 0원{% endif %}
+            </div>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-4">
+    <div class="card stat-card h-100">
+      <div class="card-body text-center">
+        <div class="cost-sub mb-1">종합 견적단가 (원/BOX)</div>
+        <div class="cost-highlight" {% if result.final.price_cpb_max != result.final.price_cpb_min %}style="font-size:1.3rem"{% endif %}>
+          {{ '{:,}'.format(result.final.price_cpb_min) }}{% if result.final.price_cpb_max != result.final.price_cpb_min %} ~ {{ '{:,}'.format(result.final.price_cpb_max) }}{% endif %}
+        </div>
+        <div class="cost-sub">원가 {{ '{:,}'.format(result.final.cost_cpb_min) }}{% if result.final.cost_cpb_max != result.final.cost_cpb_min %}~{{ '{:,}'.format(result.final.cost_cpb_max) }}{% endif %} × 배율 {{ result.final.markup }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card stat-card h-100">
+      <div class="card-body text-center">
+        <div class="cost-sub mb-1">월 예상 청구액</div>
+        <div class="cost-highlight" style="font-size:1.35rem">
+          {{ '{:,}'.format(result.final.monthly_revenue_min) }}{% if result.final.monthly_revenue_max != result.final.monthly_revenue_min %}<br>~ {{ '{:,}'.format(result.final.monthly_revenue_max) }}{% endif %} 원
+        </div>
+        <div class="cost-sub">월 {{ '{:,}'.format(result.inputs.monthly_box) }} BOX 기준</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card stat-card h-100">
+      <div class="card-body">
+        <div class="cost-sub mb-2">원가 구성 (원/BOX)</div>
+        {% set enabled_stages = result.stages|selectattr('enabled')|list %}
+        {% set total = enabled_stages|sum(attribute='cpb') %}
+        {% for sg in enabled_stages %}
+        <div class="d-flex justify-content-between small"><span>{{ sg.name }}</span><b>{{ '{:,.1f}'.format(sg.cpb) }}</b></div>
+        <div class="progress mb-2" style="height:6px">
+          <div class="progress-bar" style="width:{{ (sg.cpb / total * 100)|round if total else 0 }}%;background:{{ {'inbound':'#0d9488','storage':'#d97706','outbound':'#14b8a6','transfer':'#8b5cf6','delivery':'#6366f1'}[sg.key] }}"></div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-lg-7">
+    <div class="card h-100">
+      <div class="card-header"><i class="bi bi-tools me-1"></i> 작업비 상세 (§5.1)</div>
+      <div class="card-body p-0"><div class="table-responsive">
+        <table class="table table-sm mb-0">
+          <thead><tr><th class="ps-3">공정</th><th>구분</th><th>생산성</th><th>실부담시급</th><th>원/단위</th><th>원/BOX</th><th>일 인시</th></tr></thead>
+          <tbody>
+          {% for p in result.work.processes %}
+            <tr><td class="ps-3">{{ p.name }}</td><td><span class="badge text-bg-{{ 'info' if p.flow=='입고' else 'success' }}">{{ p.flow }}</span></td>
+                <td>{{ p.productivity }} {{ p.unit }}/시</td><td>{{ '{:,}'.format(p.wage) }}</td>
+                <td>{{ '{:,}'.format(p.unit_cost) }}</td><td>{{ p.cost_per_box }}</td><td>{{ p.day_manhours }}</td></tr>
+          {% endfor %}
+            <tr class="table-light"><td class="ps-3" colspan="5">직접작업비 합 → 간접 {{ (result.work.overhead_rate * 100)|round }}% + 소모품 {{ result.work.supplies_cpb }}</td>
+                <td class="fw-bold">{{ result.work.cost_per_box }}</td><td></td></tr>
+          </tbody>
+        </table>
+      </div></div>
+      <div class="card-footer bg-white small text-muted">
+        <i class="bi bi-people me-1"></i>{{ result.manpower.note }} — 평시 {{ result.manpower.heads_avg }}명 / 피크 {{ result.manpower.heads_p95 }}명 (일 {{ result.manpower.day_manhours_avg }}인시)
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="card mb-3 {% if not result.storage.enabled %}opacity-50{% endif %}">
+      <div class="card-header"><i class="bi bi-building me-1"></i> 보관비 상세 (§5.2)
+        {% if not result.storage.enabled %}<span class="badge text-bg-secondary ms-1">미사용</span>{% endif %}</div>
+      <div class="card-body small">
+        {% if result.storage.enabled %}
+        <div class="d-flex justify-content-between py-1 border-bottom"><span>평균재고</span><b>{{ '{:,}'.format(result.storage.avg_stock_plt) }} PLT</b></div>
+        <div class="d-flex justify-content-between py-1 border-bottom"><span>필요 평수 (유효적재 {{ result.storage.eff_plt_per_py }}PLT/평)</span><b>{{ '{:,}'.format(result.storage.need_py) }} 평</b></div>
+        <div class="d-flex justify-content-between py-1 border-bottom"><span>공간단가 + 파렛트 + 장비배부</span>
+          <b>{{ '{:,}'.format(result.storage.space_rate) }} + {{ result.storage.pallet_month }} + {{ '{:,}'.format(result.storage.forklift_alloc) }}</b></div>
+        <div class="d-flex justify-content-between py-1 border-bottom"><span>PLT·월 단가 (PLT·일 {{ result.storage.plt_day_rate }})</span><b class="text-primary">{{ '{:,}'.format(result.storage.plt_month_rate) }} 원</b></div>
+        <div class="d-flex justify-content-between py-1"><span>월 보관비 → 박스당 배부</span><b>{{ '{:,}'.format(result.storage.monthly_cost) }} 원 → {{ result.storage.cost_per_box }} 원/BOX</b></div>
+        {% endif %}
+        <div class="text-muted mt-1">{{ result.storage.stock_source }}</div>
+      </div>
+    </div>
+    <div class="card mb-3 {% if not result.transfer.enabled %}opacity-50{% endif %}">
+      <div class="card-header"><i class="bi bi-arrow-left-right me-1"></i> 이고비 (A27)
+        {% if not result.transfer.enabled %}<span class="badge text-bg-secondary ms-1">미사용</span>{% endif %}</div>
+      <div class="card-body small">
+        {% if result.transfer.enabled %}
+        <div class="d-flex justify-content-between py-1"><span>메인센터 → 거점 (적용 물량 {{ result.transfer.share_pct }}%)</span>
+          <b class="text-primary">{{ '{:,}'.format(result.transfer.per_plt) }} 원/PLT → {{ result.transfer.cost_per_box }} 원/BOX</b></div>
+        {% endif %}
+        <div class="text-muted">{{ result.transfer.note }}</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><i class="bi bi-truck me-1"></i> 배송비 (§5.3)</div>
+      <div class="card-body small">
+        {% if result.delivery.split %}
+        <div class="d-flex justify-content-between py-1 border-bottom">
+          <span>직송 {{ result.delivery.split.direct_pct }}%</span>
+          <b>{{ '{:,.0f}'.format(result.delivery.split.direct_min) }}~{{ '{:,.0f}'.format(result.delivery.split.direct_max) }} 원/BOX</b></div>
+        <div class="d-flex justify-content-between py-1 border-bottom">
+          <span>공동배송 {{ (100 - result.delivery.split.direct_pct)|round(1) }}%</span>
+          <b>{{ '{:,.0f}'.format(result.delivery.split.joint_min) }}~{{ '{:,.0f}'.format(result.delivery.split.joint_max) }} 원/BOX</b></div>
+        {% endif %}
+        <div class="d-flex justify-content-between py-1"><span>가중평균 박스당 단가</span>
+          <b class="text-primary">{{ result.delivery.min }}{% if result.delivery.max != result.delivery.min %} ~ {{ result.delivery.max }}{% endif %} 원</b></div>
+        <div class="text-muted">{{ result.delivery.note }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header"><i class="bi bi-activity me-1"></i> 민감도 시나리오 (§5.5) <span class="text-muted fw-normal small ms-1">— 최소물동 보장·구간단가 협상 근거</span></div>
+  <div class="card-body p-0"><div class="table-responsive">
+    <table class="table table-sm mb-0">
+      <thead><tr><th class="ps-3">시나리오</th><th>원가 (원/BOX)</th><th>견적단가 (원/BOX)</th><th>기준 대비</th></tr></thead>
+      <tbody>
+      {% for x in result.sensitivity %}
+        <tr><td class="ps-3">{{ x.label }}</td><td>{{ '{:,}'.format(x.cost_cpb) }}</td>
+            <td>{{ '{:,}'.format(x.price_cpb) }}</td>
+            <td class="{{ 'text-danger' if x.delta_pct > 0 else 'text-success' }}">{{ '%+.1f'|format(x.delta_pct) }}%</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div></div>
+</div>
+{% endif %}
+{% endblock %}

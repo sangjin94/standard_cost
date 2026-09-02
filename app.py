@@ -110,6 +110,10 @@ def _delivery_conf(overrides):
         'mode':       overrides.get('delivery_mode', 'manual'),
         'manual_min': overrides.get('manual_min') or 0,
         'manual_max': overrides.get('manual_max') or 0,
+        'direct_min': overrides.get('direct_min') or 0,   # split: 직송 단가
+        'direct_max': overrides.get('direct_max') or 0,
+        'joint_min':  overrides.get('joint_min') or 0,    # split: 공동배송 단가
+        'joint_max':  overrides.get('joint_max') or 0,
         'link_min':   overrides.get('link_min') or 0,
         'link_max':   overrides.get('link_max') or 0,
     }
@@ -177,28 +181,52 @@ def quote_copy(qid):
 
 # ─── 견적 작업 화면 ──────────────────────────────────────────────────────────
 
-@app.route('/quote/<int:qid>')
-def quote_view(qid):
-    q = Quote.query.get_or_404(qid)
+def _quote_ctx(q):
+    """세 단계 화면이 공유하는 컨텍스트."""
     err, s, result, params = _compute(q)
     profile, overrides = _load(q)
-    param_rows = CostParam.query.order_by(CostParam.sort_order).all()
-    region_rates = RegionRate.query.order_by(RegionRate.sido).all()
-    dp_available = os.path.isdir(os.path.join(os.path.dirname(_BASE), 'delivery_pricing'))
-    return render_template('quote.html', q=q, err=err, s=s, result=result,
-                           params=params, param_rows=param_rows,
-                           overrides=overrides, profile_meta={
-                               'ship': bool(profile.get('ship')),
-                               'pm': len(profile.get('pm') or {}),
-                               'stock': profile.get('stock'),
-                               'inbound': profile.get('inbound'),
-                           },
-                           delivery=_delivery_conf(overrides),
-                           region_rates=region_rates,
-                           all_processes=WorkProcess.query.filter_by(is_active=True)
-                                                    .order_by(WorkProcess.sort_order).all(),
-                           stage_conf=_stage_conf(overrides),
-                           dp_available=dp_available)
+    return dict(q=q, err=err, s=s, result=result,
+                params=params,
+                param_rows=CostParam.query.order_by(CostParam.sort_order).all(),
+                overrides=overrides,
+                profile_meta={
+                    'ship': bool(profile.get('ship')),
+                    'pm': len(profile.get('pm') or {}),
+                    'stock': profile.get('stock'),
+                    'inbound': profile.get('inbound'),
+                },
+                delivery=_delivery_conf(overrides),
+                all_processes=WorkProcess.query.filter_by(is_active=True)
+                                         .order_by(WorkProcess.sort_order).all(),
+                stage_conf=_stage_conf(overrides),
+                dp_available=os.path.isdir(os.path.join(os.path.dirname(_BASE), 'delivery_pricing')))
+
+
+@app.route('/quote/<int:qid>')
+def quote_view(qid):
+    """데이터가 없으면 ①데이터, 있으면 ③결과로."""
+    q = Quote.query.get_or_404(qid)
+    profile, _ = _load(q)
+    step = 'quote_result' if profile.get('ship') else 'quote_data'
+    return redirect(url_for(step, qid=qid))
+
+
+@app.route('/quote/<int:qid>/data')
+def quote_data(qid):
+    q = Quote.query.get_or_404(qid)
+    return render_template('quote_data.html', step='data', **_quote_ctx(q))
+
+
+@app.route('/quote/<int:qid>/setup')
+def quote_setup(qid):
+    q = Quote.query.get_or_404(qid)
+    return render_template('quote_setup.html', step='setup', **_quote_ctx(q))
+
+
+@app.route('/quote/<int:qid>/result')
+def quote_result(qid):
+    q = Quote.query.get_or_404(qid)
+    return render_template('quote_result.html', step='result', **_quote_ctx(q))
 
 
 def _read_upload():
@@ -243,7 +271,7 @@ def quote_upload(qid, kind):
     except Exception as e:
         db.session.rollback()
         flash(f'업로드 오류: {e}', 'danger')
-    return redirect(url_for('quote_view', qid=qid))
+    return redirect(url_for('quote_data', qid=qid))
 
 
 @app.route('/quote/<int:qid>/clear/<kind>', methods=['POST'])
@@ -254,7 +282,7 @@ def quote_clear(qid, kind):
     q.profile_json = json.dumps(profile, ensure_ascii=False)
     db.session.commit()
     flash('삭제했습니다.', 'warning')
-    return redirect(url_for('quote_view', qid=qid))
+    return redirect(url_for('quote_data', qid=qid))
 
 
 @app.route('/quote/<int:qid>/override', methods=['POST'])
@@ -279,7 +307,8 @@ def quote_override(qid):
                 overrides.pop(k, None)      # 빈칸 = 추출값/기본값 복귀
             else:
                 overrides[k] = v
-        elif k in ('delivery_mode', 'manual_min', 'manual_max', 'transfer_per_plt', 'memo'):
+        elif k in ('delivery_mode', 'manual_min', 'manual_max', 'transfer_per_plt',
+                   'direct_min', 'direct_max', 'joint_min', 'joint_max', 'memo'):
             if k == 'memo':
                 q.memo = v
             elif v == '':
@@ -289,7 +318,8 @@ def quote_override(qid):
     q.overrides_json = json.dumps(overrides, ensure_ascii=False)
     db.session.commit()
     flash('저장했습니다 — 단가를 다시 계산했습니다.', 'success')
-    return redirect(url_for('quote_view', qid=qid))
+    nxt = {'data': 'quote_data', 'setup': 'quote_setup', 'result': 'quote_result'}
+    return redirect(url_for(nxt.get(request.form.get('next'), 'quote_result'), qid=qid))
 
 
 @app.route('/quote/<int:qid>/save-result', methods=['POST'])
@@ -299,13 +329,13 @@ def quote_save_result(qid):
     err, s, result, params = _compute(q)
     if err or not result:
         flash(f'저장 불가: {err or "산정 결과 없음"}', 'danger')
-        return redirect(url_for('quote_view', qid=qid))
+        return redirect(url_for('quote_result', qid=qid))
     q.result_json = json.dumps({'summary': s, 'result': result,
                                 'params': params, 'saved_at': str(pd.Timestamp.now())[:16]},
                                ensure_ascii=False)
     db.session.commit()
     flash('견적 결과를 확정 저장했습니다.', 'success')
-    return redirect(url_for('quote_view', qid=qid))
+    return redirect(url_for('quote_result', qid=qid))
 
 
 # ─── 배송비 연동 (모드③) ─────────────────────────────────────────────────────
@@ -344,7 +374,7 @@ def quote_link_delivery(qid):
               f"{overrides['link_min']:,.0f}~{overrides['link_max']:,.0f}원/BOX", 'success')
     except Exception as e:
         flash(f'배송단가 연동 실패: {e}', 'danger')
-    return redirect(url_for('quote_view', qid=qid))
+    return redirect(url_for('quote_setup', qid=qid))
 
 
 # ─── 엑셀: 업로드 템플릿 · 견적서 ────────────────────────────────────────────
@@ -388,7 +418,7 @@ def quote_export(qid):
     err, s, r, params = _compute(q)
     if err or not r:
         flash(f'출력 불가: {err}', 'danger')
-        return redirect(url_for('quote_view', qid=qid))
+        return redirect(url_for('quote_result', qid=qid))
     _, overrides = _load(q)
 
     sum_rows = [
