@@ -58,7 +58,9 @@ REGION_DEFS = [
 REMOVED_PARAM_KEYS = ['forklift_month', 'plt_per_forklift', 'pallet_month']
 
 DEFAULT_STAGES = {'storage': True, 'transfer': False, 'transfer_per_plt': 0.0,
-                  'parcel': False, 'parcel_cost': 0.0, 'storage_bill': 'plt'}
+                  'parcel': False, 'parcel_cost': 0.0, 'storage_bill': 'plt',
+                  # A31: 청구 제외(자사 부담) 항목 — 원가는 계산하되 청구액에서 제외
+                  'nobill': set()}
 
 # 보관비 청구 단위 (A17): 월 보관비 총액은 동일, 청구 단가의 표현 단위만 다르다
 STORAGE_BILL_UNITS = {
@@ -543,17 +545,38 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
          'trace': dv_trace, 'off_reason': '배송단가 미입력'},
     ]
 
-    # 항목별 예상 마진 = 견적 − 원가 (그중 일반관리비분 = 원가×a, 순이익분 = 견적×m)
+    # 청구 제외 (A31): 원가·계산 추적은 유지하되 견적단가/월 청구액을 0으로
+    nobill = set(st.get('nobill') or [])
+    for sg in stages_out:
+        sg['billable'] = sg['key'] not in nobill
+        if sg['enabled'] and not sg['billable']:
+            sg['price_ref'] = sg['price']       # 참고: 청구했다면의 단가
+            sg['price'] = 0
+            sg['monthly_min'] = 0
+            sg['monthly_max'] = 0
+            sg['trace'] = sg['trace'] + [{
+                'label': '청구 제외 (A31 — 자사 부담)',
+                'expr': '원가는 발생하지만 화주에게 청구하지 않음 → 월 마진에서 차감',
+                'val': '견적단가 0원 (무상)'}]
+
+    # 항목별 예상 마진 = 청구액 − 원가 (비청구 항목은 −원가 = 자사 부담).
+    # min/max는 시나리오 짝(min↔min, max↔max) — 교차시키면 범위가 과장된다
     for sg in stages_out:
         sg['monthly_margin_min'] = sg['monthly_min'] - sg['monthly_cost_min']
         sg['monthly_margin_max'] = sg['monthly_max'] - sg['monthly_cost_max']
-        sg['margin_unit_min'] = round(sg['cost_min'] * (markup - 1), 1)
-        sg['margin_unit_max'] = round(sg['cost_max'] * (markup - 1), 1)
+        if sg['billable']:
+            sg['margin_unit_min'] = round(sg['cost_min'] * (markup - 1), 1)
+            sg['margin_unit_max'] = round(sg['cost_max'] * (markup - 1), 1)
+        else:
+            sg['margin_unit_min'] = -sg['cost_min']
+            sg['margin_unit_max'] = -sg['cost_max']
 
     # ── 견적 단가표 = 4항목 (종합단가 없음, §5.4) ────────────────────────────
     tariff = [{'item': ('배송비 [이고+배송]' if (sg['key'] == 'delivery' and st['transfer']) else sg['name']),
                'unit': sg['unit'], 'volume': sg['volume_label'],
-               'cost': sg['cost'], 'price': sg['price'],
+               'cost': sg['cost'],
+               'price': (sg['price'] if sg['billable'] else '무상 (자사 부담)'),
+               'billable': sg['billable'],
                'margin_unit': _rng(sg['margin_unit_min'], sg['margin_unit_max'], 0),
                'monthly_margin': _rng(sg['monthly_margin_min'], sg['monthly_margin_max'], 0),
                'monthly': _rng(sg['monthly_min'], sg['monthly_max'], 0)}
@@ -563,15 +586,22 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
     monthly_max = sum(sg['monthly_max'] for sg in stages_out if sg['enabled'])
     _mc_min = sum(sg['monthly_cost_min'] for sg in stages_out if sg['enabled'])
     _mc_max = sum(sg['monthly_cost_max'] for sg in stages_out if sg['enabled'])
+    # 청구 대상 원가 vs 자사 부담(비청구) 원가 (A31)
+    _bc_min = sum(sg['monthly_cost_min'] for sg in stages_out if sg['enabled'] and sg['billable'])
+    _bc_max = sum(sg['monthly_cost_max'] for sg in stages_out if sg['enabled'] and sg['billable'])
+    _ub_min = _mc_min - _bc_min
+    _ub_max = _mc_max - _bc_max
     final = {'markup': round(markup, 4),
              'admin_rate': admin, 'margin_rate': margin,
              'monthly_cost_min': _mc_min, 'monthly_cost_max': _mc_max,
              'monthly_revenue_min': monthly_min, 'monthly_revenue_max': monthly_max,
-             # 월 마진 = 청구액 − 원가. 분해: 일반관리비분 = 원가×a, 순이익분 = 청구액×m
+             # 월 마진 = 청구액 − 전체 원가(비청구 포함).
+             # 분해: 일반관리비분 = 청구 원가×a, 순이익분 = 청구액×m, − 자사 부담 원가
              'monthly_margin_min': monthly_min - _mc_min,
              'monthly_margin_max': monthly_max - _mc_max,
-             'admin_amount_min': round(_mc_min * admin), 'admin_amount_max': round(_mc_max * admin),
+             'admin_amount_min': round(_bc_min * admin), 'admin_amount_max': round(_bc_max * admin),
              'profit_amount_min': round(monthly_min * margin), 'profit_amount_max': round(monthly_max * margin),
+             'unbilled_cost_min': _ub_min, 'unbilled_cost_max': _ub_max,
              'monthly_box': monthly_box, 'in_plt_month': round(in_plt_month)}
 
     return {

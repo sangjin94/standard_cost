@@ -448,9 +448,7 @@ def _warnings(n_days, span_months, coverage, ship, region_box, total_box):
     """§7 필요조건 위반 경고."""
     w = []
     if span_months < 1.0:
-        w.append(f'분석기간이 {n_days}영업일({span_months:.1f}개월)로 짧습니다 — 최소 1개월, 권장 3개월 (§7)')
-    elif span_months < 3.0:
-        w.append(f'분석기간 {span_months:.1f}개월 — 계절성 확인을 위해 3개월 이상 권장 (§7)')
+        w.append(f'분석기간이 {n_days}영업일({span_months:.1f}개월)로 짧습니다 — 최소 1개월 (§7)')
     if coverage < 0.8:
         w.append(f'PLT입수 커버리지 {coverage*100:.0f}% — 80% 미만이라 보관·상하차비 오차 위험 (한계 §6.3)')
     if not ship.get('has_order_col'):

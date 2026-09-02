@@ -98,6 +98,8 @@ def _stage_conf(overrides):
         'parcel': overrides.get('use_parcel', '0') == '1',
         'parcel_cost': _f('parcel_cost'),
         'storage_bill': overrides.get('storage_bill', 'plt'),
+        'nobill': {k.split(':', 1)[1] for k, v in overrides.items()
+                   if k.startswith('nobill:') and v == '1'},
     }, excluded, included
 
 
@@ -320,6 +322,11 @@ def quote_override(qid):
                     overrides[k] = '1'
                 else:
                     overrides.pop(k, None)
+            elif k.startswith('nobill:'):
+                if v == '1':
+                    overrides[k] = '1'
+                else:
+                    overrides.pop(k, None)
             elif k in ('use_storage', 'use_transfer', 'use_parcel'):
                 overrides[k] = '1' if v == '1' else '0'
     elif request.form.get('stage_form'):    # 체크박스는 미체크 시 미전송 → marker로 일괄 재구성
@@ -333,7 +340,7 @@ def quote_override(qid):
                 overrides[k] = '1'
     for k, v in request.form.items():
         if k in ('csrf', 'stage_form', 'partial', 'next',
-                 'use_storage', 'use_transfer', 'use_parcel') or k.startswith(('proc_off:', 'proc_on:')):
+                 'use_storage', 'use_transfer', 'use_parcel') or k.startswith(('proc_off:', 'proc_on:', 'nobill:')):
             continue
         v = v.strip()
         if k.startswith(('p:', 'param:')):
@@ -468,7 +475,10 @@ def quote_export(qid):
         ['② 마진 적용', f"원가 × {r['final']['markup']} (일반관리비 {params['admin_rate']:.0%} 가산, 목표이익률 {params['margin_rate']:.0%} 반영)"],
         ['③ 월 예상 청구액',
          f"{r['final']['monthly_revenue_min']:,}~{r['final']['monthly_revenue_max']:,} 원"],
-        ['④ 월 예상 마진 (③−①)',
+        ['④ 자사 부담(비청구) 원가',
+         f"{r['final']['unbilled_cost_min']:,}~{r['final']['unbilled_cost_max']:,} 원"] if (
+            r['final']['unbilled_cost_max'] or r['final']['unbilled_cost_min']) else [],
+        ['⑤ 월 예상 마진 (③−① 전체 원가)',
          f"{r['final']['monthly_margin_min']:,}~{r['final']['monthly_margin_max']:,} 원 "
          f"(일반관리비분 {r['final']['admin_amount_min']:,}~{r['final']['admin_amount_max']:,} / "
          f"순이익분 {r['final']['profit_amount_min']:,}~{r['final']['profit_amount_max']:,})"],

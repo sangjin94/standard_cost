@@ -69,6 +69,7 @@
                onkeydown="if(event.key==='Enter')openTrace(event, 'trace-{{ sg.key }}')"{% endif %}>
             <div class="flow-head"><i class="bi {{ sg.icon }}"></i>{{ sg.name }}
               {% if sg.key == 'delivery' and result.transfer.enabled %}<span class="badge text-bg-light text-secondary ms-1" style="font-size:.62rem">이고 포함</span>{% endif %}
+              {% if sg.enabled and not sg.billable %}<span class="badge ms-1" style="background:#fdf3e7;color:#b45309;font-size:.62rem">무상</span>{% endif %}
               {% if not sg.enabled %}<span class="badge text-bg-light text-secondary ms-auto me-1">미사용</span>{% endif %}
               <button type="button" class="edit-btn {% if sg.enabled %}ms-auto{% endif %}" title="{{ sg.name }} 산정 조건 수정"
                       onclick="openEdit(event, 'edit-{{ sg.key }}')"><i class="bi bi-pencil-square"></i> 수정</button></div>
@@ -87,7 +88,7 @@
             </div>
             <div class="flow-cpb">
               {% if sg.enabled %}<span>{{ sg.volume_label }}</span>
-                <span>월 원가 {{ '{:,}'.format(sg.monthly_cost_min) }}{% if sg.monthly_cost_max != sg.monthly_cost_min %}~{{ '{:,}'.format(sg.monthly_cost_max) }}{% endif %}원</span>
+                <span>월 원가 {{ '{:,}'.format(sg.monthly_cost_min) }}{% if sg.monthly_cost_max != sg.monthly_cost_min %}~{{ '{:,}'.format(sg.monthly_cost_max) }}{% endif %}원{% if not sg.billable %} · <b style="color:#b45309">청구 0원</b>{% endif %}</span>
               {% else %}<span>월 0원</span>{% endif %}
             </div>
           </div>
@@ -140,6 +141,14 @@
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
         </div>
         <div class="modal-body">
+          {% if key in ('inbound', 'storage', 'outbound', 'delivery') %}
+          <div class="form-check form-switch mb-2 pb-2 border-bottom">
+            <input class="form-check-input tgl" type="checkbox" id="nb-{{ key }}" data-name="nobill:{{ key }}"
+                   {% if key in stage_conf[0].nobill %}checked{% endif %}>
+            <label class="form-check-label small fw-semibold" for="nb-{{ key }}" style="color:#b45309">
+              청구 제외 (자사 부담) — 원가는 계산하되 화주에게 청구하지 않음 (A31)</label>
+          </div>
+          {% endif %}
           {{ caller() }}
         </div>
         <div class="modal-footer py-2">
@@ -361,6 +370,11 @@
         <div class="d-flex justify-content-between small py-1" style="color:#b45309">
           <span class="fw-bold">월 예상 마진 (청구액 − 원가)</span>
           <span class="fw-bold">{{ '{:,}'.format(result.final.monthly_margin_min) }}{% if result.final.monthly_margin_max != result.final.monthly_margin_min %}~{{ '{:,}'.format(result.final.monthly_margin_max) }}{% endif %}원</span></div>
+        {% if result.final.unbilled_cost_max or result.final.unbilled_cost_min %}
+        <div class="d-flex justify-content-between py-0" style="color:#b45309;font-size:.74rem">
+          <span class="ms-3">└ 자사 부담(비청구) 원가 차감</span>
+          <span>−{{ '{:,}'.format(result.final.unbilled_cost_min) }}{% if result.final.unbilled_cost_max != result.final.unbilled_cost_min %}~{{ '{:,}'.format(result.final.unbilled_cost_max) }}{% endif %}원</span></div>
+        {% endif %}
         <div class="d-flex justify-content-between py-0" style="color:#b45309;font-size:.74rem">
           <span class="ms-3">└ 일반관리비분 {{ (result.final.admin_rate * 100)|round(1) }}% / 순이익분 {{ (result.final.margin_rate * 100)|round(1) }}%</span>
           <span>{{ '{:,}'.format(result.final.admin_amount_min) }}{% if result.final.admin_amount_max != result.final.admin_amount_min %}~{{ '{:,}'.format(result.final.admin_amount_max) }}{% endif %}
