@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% block title %}설계·가정 문서{% endblock %}
+{% block content %}
+<div class="page-header"><h1><i class="bi bi-journal-text me-2"></i>설계·가정 문서</h1></div>
+<div class="card"><div class="card-body doc-body">
+{{ doc_html|safe }}
+</div></div>
+<style>
+.doc-body h1 { font-size: 1.4rem; color:#134e4a; border-bottom:2px solid #ccfbf1; padding-bottom:.4rem; }
+.doc-body h2 { font-size: 1.15rem; color:#0f766e; margin-top:1.6rem; }
+.doc-body h3 { font-size: 1rem; color:#134e4a; margin-top:1.2rem; }
+.doc-body table { width:100%; border-collapse:collapse; margin:.8rem 0; font-size:.85rem; }
+.doc-body th, .doc-body td { border:1px solid #e2e8f0; padding:.35rem .6rem; }
+.doc-body th { background:#f0fdfa; }
+.doc-body blockquote { border-left:4px solid #14b8a6; background:#f0fdfa; padding:.6rem 1rem; color:#334155; }
+.doc-body code { background:#f1f5f9; padding:.1rem .3rem; border-radius:4px; }
+.doc-body pre { background:#0f172a; color:#e2e8f0; padding:.8rem 1rem; border-radius:8px; overflow-x:auto; }
+.doc-body pre code { background:transparent; color:inherit; }
+</style>
+{% endblock %}

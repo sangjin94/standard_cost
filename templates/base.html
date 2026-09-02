@@ -50,18 +50,16 @@
   <div class="brand">📦 <span>HanEx</span> 표준물류단가</div>
   <nav class="mt-2">
     <div class="nav-section">견적</div>
-    <a href="{{ url_for('quote_page') }}" class="nav-link {% if request.endpoint == 'quote_page' %}active{% endif %}">
-      <i class="bi bi-calculator"></i> 종합 견적
+    <a href="{{ url_for('index') }}" class="nav-link {% if request.endpoint in ('index','quote_view') %}active{% endif %}">
+      <i class="bi bi-calculator"></i> 견적 목록
     </a>
-    <div class="nav-section">원가 마스터</div>
-    <a href="{{ url_for('work_cost_master') }}" class="nav-link {% if request.endpoint == 'work_cost_master' %}active{% endif %}">
-      <i class="bi bi-tools"></i> 작업비 (공정)
+    <div class="nav-section">설정</div>
+    <a href="{{ url_for('masters') }}" class="nav-link {% if request.endpoint == 'masters' %}active{% endif %}">
+      <i class="bi bi-sliders"></i> 원가 마스터
     </a>
-    <a href="{{ url_for('delivery_master') }}" class="nav-link {% if request.endpoint == 'delivery_master' %}active{% endif %}">
-      <i class="bi bi-truck"></i> 물류비 (배송단가 연동)
-    </a>
-    <a href="{{ url_for('storage_master') }}" class="nav-link {% if request.endpoint == 'storage_master' %}active{% endif %}">
-      <i class="bi bi-building"></i> 보관비 (센터)
+    <div class="nav-section">문서</div>
+    <a href="{{ url_for('design_doc') }}" class="nav-link {% if request.endpoint == 'design_doc' %}active{% endif %}">
+      <i class="bi bi-journal-text"></i> 설계·가정 문서
     </a>
   </nav>
 </div>

@@ -1,0 +1,94 @@
+{% extends 'base.html' %}
+{% block title %}원가 마스터{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1><i class="bi bi-sliders me-2"></i>원가 마스터</h1>
+  <div class="text-muted small mt-1">모든 기본값은 개략값입니다 — 실측·계약값으로 교체하세요 (가정 번호는 <a href="{{ url_for('design_doc') }}">설계 문서</a> §4 참조)</div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header"><i class="bi bi-cash-coin me-1"></i> 원가 파라미터</div>
+  <form method="post" action="{{ url_for('masters_params') }}">
+  <div class="card-body p-0"><div class="table-responsive">
+    <table class="table table-sm mb-0 align-middle">
+      <thead><tr><th class="ps-3">그룹</th><th>항목</th><th>가정</th><th style="width:160px">값</th><th>단위</th><th>설명</th></tr></thead>
+      <tbody>
+      {% for c in params %}
+        <tr>
+          <td class="ps-3"><span class="badge text-bg-light border">{{ c.group }}</span></td>
+          <td class="fw-semibold">{{ c.label }}</td>
+          <td class="text-muted small">{{ c.assumption or '' }}</td>
+          <td><input name="param:{{ c.key }}" class="form-control form-control-sm" value="{{ c.value }}"></td>
+          <td class="text-muted small">{{ c.unit or '' }}</td>
+          <td class="text-muted small">{{ c.description or '' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div></div>
+  <div class="card-footer bg-white"><button class="btn btn-primary btn-sm"><i class="bi bi-save me-1"></i>파라미터 저장</button></div>
+  </form>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header"><i class="bi bi-tools me-1"></i> 작업 공정 (가정 A6) <span class="text-muted fw-normal small ms-1">생산성은 현장 실측으로 교체 — 표준값과 ±30% 차이가 흔함</span></div>
+  <div class="card-body p-0"><div class="table-responsive">
+    <table class="table table-sm mb-0 align-middle">
+      <thead><tr><th class="ps-3">공정명</th><th>구분</th><th>단위</th><th>생산성(단위/인시)</th><th>인력</th><th>사용</th><th>메모</th><th style="width:130px"></th></tr></thead>
+      <tbody>
+      {% for p in processes %}
+        <form method="post" action="{{ url_for('process_update', pid=p.id) }}">
+        <tr class="{% if not p.is_active %}table-light text-muted{% endif %}">
+          <td class="ps-3"><input name="name" class="form-control form-control-sm" value="{{ p.name }}"></td>
+          <td><select name="flow" class="form-select form-select-sm"><option {% if p.flow=='입고' %}selected{% endif %}>입고</option><option {% if p.flow=='출고' %}selected{% endif %}>출고</option></select></td>
+          <td><select name="unit" class="form-select form-select-sm"><option {% if p.unit=='BOX' %}selected{% endif %}>BOX</option><option {% if p.unit=='PLT' %}selected{% endif %}>PLT</option></select></td>
+          <td><input name="productivity" class="form-control form-control-sm" value="{{ p.productivity }}"></td>
+          <td><select name="worker_type" class="form-select form-select-sm"><option {% if p.worker_type=='일용' %}selected{% endif %}>일용</option><option {% if p.worker_type=='지게차' %}selected{% endif %}>지게차</option></select></td>
+          <td class="text-center"><input type="checkbox" name="is_active" class="form-check-input" {% if p.is_active %}checked{% endif %}></td>
+          <td class="text-muted small">{{ p.memo or '' }}</td>
+          <td class="text-end pe-3">
+            <button class="btn btn-sm btn-outline-primary">저장</button>
+            <button class="btn btn-sm btn-outline-danger" formaction="{{ url_for('process_delete', pid=p.id) }}"
+                    onclick="return confirmDelete('공정 [{{ p.name }}] 삭제?')">삭제</button>
+          </td>
+        </tr>
+        </form>
+      {% endfor %}
+        <form method="post" action="{{ url_for('process_add') }}">
+        <tr class="table-light">
+          <td class="ps-3"><input name="name" class="form-control form-control-sm" placeholder="새 공정 (예: 낱개 피킹, 반품 재작업)" required></td>
+          <td><select name="flow" class="form-select form-select-sm"><option>입고</option><option selected>출고</option></select></td>
+          <td><select name="unit" class="form-select form-select-sm"><option selected>BOX</option><option>PLT</option></select></td>
+          <td><input name="productivity" class="form-control form-control-sm" placeholder="예: 100" required></td>
+          <td><select name="worker_type" class="form-select form-select-sm"><option selected>일용</option><option>지게차</option></select></td>
+          <td></td>
+          <td><input name="memo" class="form-control form-control-sm" placeholder="메모"></td>
+          <td class="text-end pe-3"><button class="btn btn-sm btn-primary">추가</button></td>
+        </tr>
+        </form>
+      </tbody>
+    </table>
+  </div></div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header"><i class="bi bi-truck me-1"></i> 배송 권역 단가표 (가정 A19 — 모드②) <span class="text-muted fw-normal small ms-1">박스당 단가, 빈칸이면 해당 권역 미등록</span></div>
+  <form method="post" action="{{ url_for('masters_regions') }}">
+  <div class="card-body">
+    <div class="row g-2">
+      {% set rmap = {} %}
+      {% for r in regions %}{% if rmap.update({r.sido: r.cost_per_box}) %}{% endif %}{% endfor %}
+      {% for sido in all_sido %}
+      <div class="col-md-2 col-4">
+        <div class="input-group input-group-sm">
+          <span class="input-group-text" style="min-width:52px">{{ sido }}</span>
+          <input name="region:{{ sido }}" class="form-control" value="{{ rmap.get(sido, '')|int if rmap.get(sido) else '' }}">
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="card-footer bg-white"><button class="btn btn-primary btn-sm"><i class="bi bi-save me-1"></i>권역 단가 저장</button></div>
+  </form>
+</div>
+{% endblock %}

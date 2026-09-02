@@ -1,0 +1,71 @@
+{% extends 'base.html' %}
+{% block title %}견적 목록{% endblock %}
+{% block content %}
+<div class="page-header d-flex justify-content-between align-items-center">
+  <h1><i class="bi bi-calculator me-2"></i>표준물류단가 견적</h1>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header"><i class="bi bi-plus-circle me-1"></i> 새 견적 만들기</div>
+  <div class="card-body">
+    <form method="post" action="{{ url_for('quote_new') }}" class="row g-2 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label">견적명 *</label>
+        <input name="name" class="form-control" placeholder="예: ○○식품 2026 하반기 견적" required>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">화주사</label>
+        <input name="customer_name" class="form-control" placeholder="화주사명">
+      </div>
+      <div class="col-md-2">
+        <button class="btn btn-primary w-100"><i class="bi bi-arrow-right-circle me-1"></i>생성</button>
+      </div>
+      <div class="col-md-3 text-muted small">
+        생성 후 출고내역·상품마스터를 업로드하면<br>물동 프로파일이 자동 추출됩니다.
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><i class="bi bi-list-ul me-1"></i> 견적 목록 ({{ rows|length }}건)</div>
+  <div class="card-body p-0">
+    {% if not rows %}
+      <div class="p-4 text-muted">아직 견적이 없습니다. 위에서 새 견적을 만들어 시작하세요.</div>
+    {% else %}
+    <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead><tr>
+        <th class="ps-3">견적명</th><th>화주사</th><th>확정 단가 (원/BOX)</th>
+        <th>월 예상 청구액</th><th>수정일</th><th style="width:180px"></th>
+      </tr></thead>
+      <tbody>
+      {% for r in rows %}
+        <tr>
+          <td class="ps-3"><a href="{{ url_for('quote_view', qid=r.q.id) }}" class="fw-semibold text-decoration-none">{{ r.q.name }}</a></td>
+          <td>{{ r.q.customer_name or '-' }}</td>
+          <td>
+            {% if r.saved %}
+              <span class="fw-semibold">{{ '{:,}'.format(r.saved.result.final.price_cpb_min) }}~{{ '{:,}'.format(r.saved.result.final.price_cpb_max) }}</span>
+              <span class="text-muted small">({{ r.saved.saved_at }})</span>
+            {% else %}<span class="text-muted">미확정</span>{% endif %}
+          </td>
+          <td>{% if r.saved %}{{ '{:,}'.format(r.saved.result.final.monthly_revenue_min) }}~{{ '{:,}'.format(r.saved.result.final.monthly_revenue_max) }}원{% else %}-{% endif %}</td>
+          <td class="text-muted small">{{ r.q.updated_at.strftime('%m-%d %H:%M') }}</td>
+          <td class="text-end pe-3">
+            <a class="btn btn-sm btn-outline-primary" href="{{ url_for('quote_view', qid=r.q.id) }}">열기</a>
+            <form class="d-inline" method="post" action="{{ url_for('quote_copy', qid=r.q.id) }}">
+              <button class="btn btn-sm btn-outline-secondary">복제</button></form>
+            <form class="d-inline" method="post" action="{{ url_for('quote_delete', qid=r.q.id) }}"
+                  onsubmit="return confirmDelete('견적 [{{ r.q.name }}] 을 삭제할까요?')">
+              <button class="btn btn-sm btn-outline-danger">삭제</button></form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

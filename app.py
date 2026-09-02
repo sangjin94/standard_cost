@@ -1,423 +1,539 @@
-import os
-from datetime import datetime
-from flask import (
-    Flask, render_template, request, redirect, url_for, flash
-)
-from models import (
-    db, SystemConfig, WorkCostProcess, StorageCenter, StandardQuote
-)
-from quote_calc import (
-    work_cost_breakdown, storage_cost_breakdown,
-    final_price, scenario_table,
-)
-import delivery_link
+"""표준물류단가 산정 시스템 — 데이터 업로드 기반 TPL 견적 도구.
 
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-app = Flask(__name__, instance_path=os.path.join(_BASE_DIR, 'instance'))
+설계·가정·수식·한계는 docs/DESIGN.md 참조 (앱 내 '설계 문서' 메뉴로도 열람).
+"""
+import io
+import json
+import os
+
+import pandas as pd
+from flask import (Flask, render_template, request, redirect, url_for,
+                   flash, jsonify, send_file)
+
+from models import db, CostParam, WorkProcess, RegionRate, Quote
+import profile_extract as pe
+import engine
+
+_BASE = os.path.dirname(os.path.abspath(__file__))
+app = Flask(__name__, instance_path=os.path.join(_BASE, 'instance'))
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///standard_pricing.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = 'hanex-standard-pricing-2026'
+app.config['SECRET_KEY'] = 'hanex-standard-2026'
+app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024
 
 db.init_app(app)
 
-DEFAULT_CONFIGS = [
-    ('work_overhead_rate', '10', '작업비 간접배부율 % (관리인력·장비비 등)'),
-    ('quote_admin_rate', '7', '일반관리비율 %'),
-    ('quote_margin_rate', '10', '목표이익률 %'),
-    ('quote_turnover_days', '15', '기본 재고회전일수'),
-    ('delivery_pricing_dir', r'C:\Users\HanEx\Desktop\delivery_pricing',
-     '배송비 단가 시스템(delivery_pricing) 폴더 경로 — 물류비 연동에 사용'),
-]
-
-# 기본 작업 공정 (작업비 마스터가 비어 있으면 자동 삽입)
-DEFAULT_WORK_PROCESSES = [
-    # (공정명, 단위, 시간당 생산성, 시급, 정렬)
-    ('입고 하차',      'PLT', 25,  12000, 0),
-    ('입고 검수·적치', 'PLT', 15,  12000, 1),
-    ('피킹',           'BOX', 120, 12000, 2),
-    ('검품·포장',      'BOX', 150, 12000, 3),
-    ('출고 상차',      'PLT', 20,  12000, 4),
-]
-
 with app.app_context():
     db.create_all()
-    with db.engine.connect() as _conn:
-        try:
-            _conn.execute(db.text("ALTER TABLE standard_quote ADD COLUMN delivery_source VARCHAR(100)"))
-            _conn.commit()
-        except Exception:
-            pass
-    for key, val, desc in DEFAULT_CONFIGS:
-        if not SystemConfig.query.filter_by(key=key).first():
-            db.session.add(SystemConfig(key=key, value=val, description=desc))
-    if WorkCostProcess.query.count() == 0:
-        for pn, u, prod, wage, so in DEFAULT_WORK_PROCESSES:
-            db.session.add(WorkCostProcess(
-                process_name=pn, unit=u, productivity_per_hour=prod,
-                hourly_wage=wage, sort_order=so))
+    # 기본값 seed (이미 있으면 건드리지 않음 — 사용자가 수정한 값 보존)
+    if CostParam.query.count() == 0:
+        for i, (k, v, label, unit, grp, a, desc) in enumerate(engine.PARAM_DEFS):
+            db.session.add(CostParam(key=k, value=v, label=label, unit=unit,
+                                     group=grp, assumption=a, description=desc, sort_order=i))
+    if WorkProcess.query.count() == 0:
+        for i, (name, flow, unit, prod, wt, memo) in enumerate(engine.PROCESS_DEFS):
+            db.session.add(WorkProcess(name=name, flow=flow, unit=unit,
+                                       productivity=prod, worker_type=wt, memo=memo, sort_order=i))
+    if RegionRate.query.count() == 0:
+        for sido, rate in engine.REGION_DEFS:
+            db.session.add(RegionRate(sido=sido, cost_per_box=rate,
+                                      memo='개략 seed — 실계약 단가로 교체'))
     db.session.commit()
 
 
-def _cfg_float(key, default):
-    cfg = SystemConfig.query.filter_by(key=key).first()
+# ─── 공통 헬퍼 ───────────────────────────────────────────────────────────────
+
+def _params(overrides=None):
+    """CostParam 기본값 + 견적별 오버라이드 병합."""
+    p = {c.key: c.value for c in CostParam.query.all()}
+    for k, v, *_ in engine.PARAM_DEFS:          # 마스터에서 지워졌어도 계산은 되게
+        p.setdefault(k, v)
+    if overrides:
+        for k, v in overrides.items():
+            if k.startswith('param:'):
+                try:
+                    p[k[6:]] = float(v)
+                except (TypeError, ValueError):
+                    pass
+    return p
+
+
+def _processes():
+    rows = WorkProcess.query.filter_by(is_active=True).order_by(WorkProcess.sort_order).all()
+    return [{'name': r.name, 'flow': r.flow, 'unit': r.unit,
+             'productivity': r.productivity, 'worker_type': r.worker_type} for r in rows]
+
+
+def _load(q):
+    profile = json.loads(q.profile_json) if q.profile_json else {}
+    overrides = json.loads(q.overrides_json) if q.overrides_json else {}
+    return profile, overrides
+
+
+def _summary_with_overrides(profile, overrides, params):
+    s = pe.summarize(profile, params)
+    if not s:
+        return None
+    applied = []
+    for k, v in overrides.items():
+        if k.startswith('p:') and k[2:] in s:
+            key = k[2:]
+            try:
+                s[key] = float(v)
+                applied.append(key)
+            except (TypeError, ValueError):
+                pass
+    s['overridden'] = applied
+    return s
+
+
+def _delivery_conf(overrides):
+    return {
+        'mode':       overrides.get('delivery_mode', 'manual'),
+        'manual_min': overrides.get('manual_min') or 0,
+        'manual_max': overrides.get('manual_max') or 0,
+        'link_min':   overrides.get('link_min') or 0,
+        'link_max':   overrides.get('link_max') or 0,
+    }
+
+
+def _compute(q):
+    """견적 1건 실시간 산정. (에러 메시지, 결과) 튜플."""
+    profile, overrides = _load(q)
+    params = _params(overrides)
+    s = _summary_with_overrides(profile, overrides, params)
+    if not s:
+        return '출고내역을 먼저 업로드하세요.', None, None, params
+    region_rates = {r.sido: r.cost_per_box for r in RegionRate.query.all()}
     try:
-        return float(cfg.value) if cfg else default
-    except (TypeError, ValueError):
-        return default
+        result = engine.compute(s, params, _processes(), region_rates, _delivery_conf(overrides))
+    except ValueError as e:
+        return str(e), s, None, params
+    return None, s, result, params
 
 
-def _cfg_str(key, default=''):
-    cfg = SystemConfig.query.filter_by(key=key).first()
-    return cfg.value if cfg and cfg.value else default
-
-
-# ─── 종합 견적 (메인) ─────────────────────────────────────────────────────────
+# ─── 견적 목록/생성 ──────────────────────────────────────────────────────────
 
 @app.route('/')
-def quote_page():
-    storage_rows = StorageCenter.query.order_by(StorageCenter.center_name).all()
-
-    # ── 배송비 단가 시스템 연동 (고객사 목록) ────────────────────────────────
-    dp_dir = _cfg_str('delivery_pricing_dir')
-    link_customers, link_error = [], None
-    if dp_dir and os.path.isdir(dp_dir):
-        try:
-            link_customers = delivery_link.list_customers(dp_dir)
-        except Exception as e:
-            link_error = f'배송단가 시스템 연동 실패: {e}'
-    elif dp_dir:
-        link_error = f'배송단가 시스템 폴더를 찾을 수 없습니다: {dp_dir}'
-
-    # 입력 파라미터 (기본값은 시스템 설정)
-    customer_name = request.args.get('customer_name', '').strip()
-    monthly_boxes = request.args.get('monthly_boxes', type=float)
-    boxes_per_plt = request.args.get('boxes_per_plt', type=float)
-    biz_days = request.args.get('biz_days', type=float)
-    turnover_days = request.args.get('turnover_days', type=float) or _cfg_float('quote_turnover_days', 15)
-    admin_rate = request.args.get('admin_rate', type=float)
-    if admin_rate is None:
-        admin_rate = _cfg_float('quote_admin_rate', 7)
-    margin_rate = request.args.get('margin_rate', type=float)
-    if margin_rate is None:
-        margin_rate = _cfg_float('quote_margin_rate', 10)
-    center_name = request.args.get('center_name', '').strip()
-    delivery_override = request.args.get('delivery_override', type=float)  # 박스당 배송비 직접 입력 (선택)
-    link_cid = request.args.get('link_customer_id', type=int)
-    price_mode = request.args.get('mode', 'min')
-    if price_mode not in ('min', 'max'):
-        price_mode = 'min'
-
-    # ── 연동 고객사 선택 시: 배송단가·물동을 기존 시스템에서 가져옴 ─────────
-    link_summary = None
-    if link_cid and dp_dir:
-        try:
-            link_summary = delivery_link.get_summary(dp_dir, link_cid)
-        except Exception as e:
-            link_error = f'배송단가 조회 실패: {e}'
-    if link_summary:
-        if not customer_name:
-            customer_name = link_summary.get('customer_name', '')
-        lv = link_summary.get('volume')
-        if lv:
-            # 물동을 직접 입력하지 않았으면 출고내역 실적으로 자동 채움
-            if not monthly_boxes:
-                monthly_boxes = lv['monthly_boxes']
-            if not boxes_per_plt:
-                boxes_per_plt = lv['boxes_per_plt']
-            if not biz_days:
-                biz_days = lv['biz_days_per_month']
-    if not biz_days:
-        biz_days = 22.0
-
-    ctx = {
-        'storage_rows': storage_rows,
-        'link_customers': link_customers, 'link_error': link_error,
-        'link_cid': link_cid, 'link_summary': link_summary, 'price_mode': price_mode,
-        'customer_name': customer_name, 'monthly_boxes': monthly_boxes,
-        'boxes_per_plt': boxes_per_plt, 'biz_days': biz_days,
-        'turnover_days': turnover_days, 'admin_rate': admin_rate,
-        'margin_rate': margin_rate, 'center_name': center_name,
-        'delivery_override': delivery_override,
-        'computed': False,
-        'saved_quotes': StandardQuote.query.order_by(StandardQuote.created_at.desc()).limit(50).all(),
-    }
-    if not monthly_boxes or monthly_boxes <= 0 or not boxes_per_plt or boxes_per_plt <= 0:
-        return render_template('quote.html', **ctx)
-
-    monthly_plt = monthly_boxes / boxes_per_plt
-    daily_plt = monthly_plt / biz_days if biz_days > 0 else 0
-    avg_stock_plt = daily_plt * turnover_days
-
-    overhead_rate = _cfg_float('work_overhead_rate', 10)
-    processes = WorkCostProcess.query.order_by(WorkCostProcess.sort_order, WorkCostProcess.id).all()
-    work_cpb, work_detail, work_direct = work_cost_breakdown(processes, boxes_per_plt, overhead_rate)
-
-    # ── 물류비: 직접입력 > 배송단가 시스템 연동 (그대로 사용) ────────────────
-    link_delivery = link_summary.get('delivery') if link_summary else None
-    if delivery_override is not None:
-        delivery_cpb = delivery_override
-        delivery_source = '직접입력'
-    elif link_delivery:
-        delivery_cpb = link_delivery['cpb_min'] if price_mode == 'min' else link_delivery['cpb_max']
-        delivery_source = f"연동: {link_summary['customer_name']} ({'최소' if price_mode == 'min' else '최대'})"
-    else:
-        delivery_cpb = 0.0
-        delivery_source = '미지정'
-
-    storage_center = StorageCenter.query.filter_by(center_name=center_name).first() if center_name else None
-    storage = storage_cost_breakdown(storage_center, avg_stock_plt, monthly_boxes)
-
-    fp = final_price(work_cpb, delivery_cpb, storage['cost_per_box'],
-                     admin_rate, margin_rate, boxes_per_plt)
-    scenarios = scenario_table(processes, boxes_per_plt, overhead_rate,
-                               storage_center, avg_stock_plt, monthly_boxes,
-                               delivery_cpb, admin_rate, margin_rate)
-
-    ctx.update({
-        'computed': True,
-        'monthly_plt': monthly_plt, 'daily_plt': daily_plt, 'avg_stock_plt': avg_stock_plt,
-        'overhead_rate': overhead_rate,
-        'work_cpb': work_cpb, 'work_detail': work_detail, 'work_direct': work_direct,
-        'delivery_cpb': delivery_cpb, 'delivery_source': delivery_source,
-        'link_delivery': link_delivery,
-        'storage_center': storage_center, 'storage': storage,
-        'fp': fp, 'scenarios': scenarios,
-    })
-    return render_template('quote.html', **ctx)
+def index():
+    quotes = Quote.query.order_by(Quote.updated_at.desc()).all()
+    rows = []
+    for q in quotes:
+        r = json.loads(q.result_json) if q.result_json else None
+        rows.append({'q': q, 'saved': r})
+    return render_template('index.html', rows=rows)
 
 
-@app.route('/quote/save', methods=['POST'])
-def quote_save():
-    try:
-        q = StandardQuote(
-            quote_name=request.form.get('quote_name', '').strip() or f"견적 {datetime.now():%Y-%m-%d %H:%M}",
-            customer_name=request.form.get('customer_name', '').strip(),
-            center_name=request.form.get('center_name') or None,
-            monthly_boxes=float(request.form.get('monthly_boxes') or 0),
-            boxes_per_plt=float(request.form.get('boxes_per_plt') or 0),
-            biz_days=float(request.form.get('biz_days') or 0),
-            turnover_days=float(request.form.get('turnover_days') or 0),
-            avg_stock_plt=float(request.form.get('avg_stock_plt') or 0),
-            work_cpb=float(request.form.get('work_cpb') or 0),
-            delivery_cpb=float(request.form.get('delivery_cpb') or 0),
-            delivery_source=request.form.get('delivery_source', '').strip() or None,
-            storage_cpb=float(request.form.get('storage_cpb') or 0),
-            work_overhead_rate=float(request.form.get('work_overhead_rate') or 0),
-            admin_rate=float(request.form.get('admin_rate') or 0),
-            margin_rate=float(request.form.get('margin_rate') or 0),
-            final_cpb=float(request.form.get('final_cpb') or 0),
-            final_cpp=float(request.form.get('final_cpp') or 0),
-            memo=request.form.get('memo', '').strip(),
-        )
-        db.session.add(q)
-        db.session.commit()
-        flash(f'견적 [{q.quote_name}]이 저장되었습니다.', 'success')
-    except Exception as e:
-        flash(f'견적 저장 오류: {e}', 'danger')
-    return redirect(url_for('quote_page'))
+@app.route('/quote/new', methods=['POST'])
+def quote_new():
+    name = request.form.get('name', '').strip()
+    if not name:
+        flash('견적명을 입력하세요.', 'danger')
+        return redirect(url_for('index'))
+    q = Quote(name=name, customer_name=request.form.get('customer_name', '').strip())
+    db.session.add(q)
+    db.session.commit()
+    return redirect(url_for('quote_view', qid=q.id))
 
 
 @app.route('/quote/<int:qid>/delete', methods=['POST'])
 def quote_delete(qid):
-    q = StandardQuote.query.get_or_404(qid)
+    q = Quote.query.get_or_404(qid)
     db.session.delete(q)
     db.session.commit()
     flash('견적이 삭제되었습니다.', 'warning')
-    return redirect(url_for('quote_page'))
+    return redirect(url_for('index'))
 
 
-# ─── 작업비 마스터 ────────────────────────────────────────────────────────────
-
-@app.route('/masters/work-cost')
-def work_cost_master():
-    processes = WorkCostProcess.query.order_by(WorkCostProcess.sort_order, WorkCostProcess.id).all()
-    overhead_rate = _cfg_float('work_overhead_rate', 10)
-    preview_bpp = _cfg_float('work_preview_boxes_per_plt', 60)
-    total_cpb, detail, direct_total = work_cost_breakdown(processes, preview_bpp, overhead_rate)
-    detail_map = {d['name']: d for d in detail}
-    return render_template('work_cost.html',
-                           processes=processes, overhead_rate=overhead_rate,
-                           preview_bpp=preview_bpp, detail_map=detail_map,
-                           direct_total=direct_total, total_cpb=total_cpb)
+@app.route('/quote/<int:qid>/copy', methods=['POST'])
+def quote_copy(qid):
+    q = Quote.query.get_or_404(qid)
+    c = Quote(name=q.name + ' (복사)', customer_name=q.customer_name, memo=q.memo,
+              profile_json=q.profile_json, overrides_json=q.overrides_json)
+    db.session.add(c)
+    db.session.commit()
+    return redirect(url_for('quote_view', qid=c.id))
 
 
-@app.route('/masters/work-cost/add', methods=['POST'])
-def work_cost_add():
-    name = request.form.get('process_name', '').strip()
-    unit = request.form.get('unit', 'BOX').strip()
-    prod_str = request.form.get('productivity', '').replace(',', '').strip()
-    wage_str = request.form.get('hourly_wage', '').replace(',', '').strip()
-    memo = request.form.get('memo', '').strip()
-    if not name or not prod_str or not wage_str:
-        flash('공정명, 생산성, 시급을 모두 입력해주세요.', 'danger')
-        return redirect(url_for('work_cost_master'))
+# ─── 견적 작업 화면 ──────────────────────────────────────────────────────────
+
+@app.route('/quote/<int:qid>')
+def quote_view(qid):
+    q = Quote.query.get_or_404(qid)
+    err, s, result, params = _compute(q)
+    profile, overrides = _load(q)
+    param_rows = CostParam.query.order_by(CostParam.sort_order).all()
+    region_rates = RegionRate.query.order_by(RegionRate.sido).all()
+    dp_available = os.path.isdir(os.path.join(os.path.dirname(_BASE), 'delivery_pricing'))
+    return render_template('quote.html', q=q, err=err, s=s, result=result,
+                           params=params, param_rows=param_rows,
+                           overrides=overrides, profile_meta={
+                               'ship': bool(profile.get('ship')),
+                               'pm': len(profile.get('pm') or {}),
+                               'stock': profile.get('stock'),
+                               'inbound': profile.get('inbound'),
+                           },
+                           delivery=_delivery_conf(overrides),
+                           region_rates=region_rates,
+                           dp_available=dp_available)
+
+
+def _read_upload():
+    f = request.files.get('file')
+    if not f or not f.filename:
+        raise ValueError('파일을 선택하세요.')
+    if f.filename.lower().endswith(('.xlsx', '.xls')):
+        return pd.read_excel(f)
+    return pd.read_csv(f)
+
+
+@app.route('/quote/<int:qid>/upload/<kind>', methods=['POST'])
+def quote_upload(qid, kind):
+    q = Quote.query.get_or_404(qid)
+    profile, overrides = _load(q)
+    params = _params(overrides)
     try:
-        prod = float(prod_str)
-        wage = int(float(wage_str))
-        if prod <= 0 or wage <= 0:
-            raise ValueError('생산성과 시급은 0보다 커야 합니다.')
-        existing = WorkCostProcess.query.filter_by(process_name=name).first()
-        if existing:
-            existing.unit = unit
-            existing.productivity_per_hour = prod
-            existing.hourly_wage = wage
-            existing.memo = memo
-            flash(f'[{name}] 공정이 업데이트되었습니다.', 'success')
+        df = _read_upload()
+        if kind == 'ship':
+            profile['ship'] = pe.parse_shipments(df)
+            flash(f"출고내역 {profile['ship']['rows']:,}행 업로드"
+                  + (f" (무효 {profile['ship']['skipped']:,}행 제외)" if profile['ship']['skipped'] else ''),
+                  'success')
+        elif kind == 'product':
+            profile['pm'] = pe.parse_products(df)
+            flash(f"상품마스터 {len(profile['pm']):,}개 업로드", 'success')
+        elif kind == 'stock':
+            pm = dict((profile.get('ship') or {}).get('pm_extra') or {})
+            pm.update(profile.get('pm') or {})
+            profile['stock'] = pe.parse_stock(df, pm, params['default_boxes_per_plt'])
+            flash(f"재고 스냅샷 {profile['stock']['days']}일 업로드 "
+                  f"(평균 {profile['stock']['avg_stock_plt']:,}PLT)", 'success')
+        elif kind == 'inbound':
+            pm = dict((profile.get('ship') or {}).get('pm_extra') or {})
+            pm.update(profile.get('pm') or {})
+            profile['inbound'] = pe.parse_inbound(df, pm, params['default_boxes_per_plt'])
+            flash(f"입고내역 {profile['inbound']['days']}일 업로드", 'success')
         else:
-            max_so = db.session.query(db.func.max(WorkCostProcess.sort_order)).scalar() or 0
-            db.session.add(WorkCostProcess(
-                process_name=name, unit=unit, productivity_per_hour=prod,
-                hourly_wage=wage, memo=memo, sort_order=max_so + 1))
-            flash(f'[{name}] 공정이 추가되었습니다.', 'success')
+            raise ValueError('알 수 없는 업로드 종류')
+        q.profile_json = json.dumps(profile, ensure_ascii=False)
         db.session.commit()
     except Exception as e:
-        flash(f'오류: {e}', 'danger')
-    return redirect(url_for('work_cost_master'))
+        db.session.rollback()
+        flash(f'업로드 오류: {e}', 'danger')
+    return redirect(url_for('quote_view', qid=qid))
 
 
-@app.route('/masters/work-cost/<int:pid>/toggle', methods=['POST'])
-def work_cost_toggle(pid):
-    p = WorkCostProcess.query.get_or_404(pid)
-    p.is_active = not p.is_active
+@app.route('/quote/<int:qid>/clear/<kind>', methods=['POST'])
+def quote_clear(qid, kind):
+    q = Quote.query.get_or_404(qid)
+    profile, _ = _load(q)
+    profile.pop({'ship': 'ship', 'product': 'pm', 'stock': 'stock', 'inbound': 'inbound'}.get(kind, kind), None)
+    q.profile_json = json.dumps(profile, ensure_ascii=False)
     db.session.commit()
-    flash(f'[{p.process_name}] 공정이 {"활성화" if p.is_active else "비활성화"}되었습니다.', 'info')
-    return redirect(url_for('work_cost_master'))
+    flash('삭제했습니다.', 'warning')
+    return redirect(url_for('quote_view', qid=qid))
 
 
-@app.route('/masters/work-cost/<int:pid>/delete', methods=['POST'])
-def work_cost_delete(pid):
-    p = WorkCostProcess.query.get_or_404(pid)
-    name = p.process_name
-    db.session.delete(p)
+@app.route('/quote/<int:qid>/override', methods=['POST'])
+def quote_override(qid):
+    """프로파일 보정값 · 파라미터 오버라이드 · 배송 설정 저장."""
+    q = Quote.query.get_or_404(qid)
+    _, overrides = _load(q)
+    for k, v in request.form.items():
+        if k in ('csrf',):
+            continue
+        v = v.strip()
+        if k.startswith(('p:', 'param:')):
+            if v == '':
+                overrides.pop(k, None)      # 빈칸 = 추출값/기본값 복귀
+            else:
+                overrides[k] = v
+        elif k in ('delivery_mode', 'manual_min', 'manual_max', 'memo'):
+            if k == 'memo':
+                q.memo = v
+            elif v == '':
+                overrides.pop(k, None)
+            else:
+                overrides[k] = v
+    q.overrides_json = json.dumps(overrides, ensure_ascii=False)
     db.session.commit()
-    flash(f'[{name}] 공정이 삭제되었습니다.', 'warning')
-    return redirect(url_for('work_cost_master'))
+    flash('저장했습니다 — 단가를 다시 계산했습니다.', 'success')
+    return redirect(url_for('quote_view', qid=qid))
 
 
-@app.route('/masters/work-cost/config', methods=['POST'])
-def work_cost_config():
-    for key, form_key, desc in [
-        ('work_overhead_rate', 'overhead_rate', '작업비 간접배부율 % (관리인력·장비비 등)'),
-        ('work_preview_boxes_per_plt', 'preview_bpp', '작업비 미리보기 BOX/PLT 환산비'),
-    ]:
-        val = request.form.get(form_key, '').strip()
-        if not val:
+@app.route('/quote/<int:qid>/save-result', methods=['POST'])
+def quote_save_result(qid):
+    """현재 산정 결과를 스냅샷으로 확정 저장 (목록·이력용)."""
+    q = Quote.query.get_or_404(qid)
+    err, s, result, params = _compute(q)
+    if err or not result:
+        flash(f'저장 불가: {err or "산정 결과 없음"}', 'danger')
+        return redirect(url_for('quote_view', qid=qid))
+    q.result_json = json.dumps({'summary': s, 'result': result,
+                                'params': params, 'saved_at': str(pd.Timestamp.now())[:16]},
+                               ensure_ascii=False)
+    db.session.commit()
+    flash('견적 결과를 확정 저장했습니다.', 'success')
+    return redirect(url_for('quote_view', qid=qid))
+
+
+# ─── 배송비 연동 (모드③) ─────────────────────────────────────────────────────
+
+def _dp_dir():
+    return os.path.join(os.path.dirname(_BASE), 'delivery_pricing')
+
+
+@app.route('/api/delivery-customers')
+def api_delivery_customers():
+    try:
+        import delivery_link
+        return jsonify({'ok': True, 'customers': delivery_link.list_customers(_dp_dir())})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
+
+
+@app.route('/quote/<int:qid>/link-delivery', methods=['POST'])
+def quote_link_delivery(qid):
+    q = Quote.query.get_or_404(qid)
+    _, overrides = _load(q)
+    try:
+        import delivery_link
+        cid = int(request.form['customer_id'])
+        data = delivery_link.get_summary(_dp_dir(), cid)
+        d = data.get('delivery') or {}
+        if not d.get('cost_per_box_min'):
+            raise RuntimeError('연동 결과에 박스당 단가가 없습니다.')
+        overrides['delivery_mode'] = 'link'
+        overrides['link_min'] = d['cost_per_box_min']
+        overrides['link_max'] = d.get('cost_per_box_max') or d['cost_per_box_min']
+        overrides['link_customer'] = data.get('customer_name') or str(cid)
+        q.overrides_json = json.dumps(overrides, ensure_ascii=False)
+        db.session.commit()
+        flash(f"배송단가 연동: {overrides['link_customer']} "
+              f"{overrides['link_min']:,.0f}~{overrides['link_max']:,.0f}원/BOX", 'success')
+    except Exception as e:
+        flash(f'배송단가 연동 실패: {e}', 'danger')
+    return redirect(url_for('quote_view', qid=qid))
+
+
+# ─── 엑셀: 업로드 템플릿 · 견적서 ────────────────────────────────────────────
+
+_TEMPLATES = {
+    'ship': ('출고내역_템플릿.xlsx', pd.DataFrame({
+        '출고일자': ['2026-08-01', '2026-08-01'], '주문번호': ['SO-1001', 'SO-1002'],
+        '배송처코드': ['ST001', 'ST002'], '배송처명': ['이마트 A점', '홈플러스 B점'],
+        '주소': ['경기 용인시 기흥구 …', '서울 송파구 …'],
+        '상품코드': ['P001', 'P002'], '박스수': [12, 30], '출고수량(PLT)': ['', 0.5]})),
+    'product': ('상품마스터_템플릿.xlsx', pd.DataFrame({
+        '상품코드': ['P001', 'P002'], '상품명': ['상품A', '상품B'],
+        'PLT입수(BOX/PLT)': [60, 48], '박스중량(kg)': [8.5, 12.0],
+        '가로(mm)': [400, 500], '세로(mm)': [300, 350], '높이(mm)': [250, 300]})),
+    'stock': ('재고_템플릿.xlsx', pd.DataFrame({
+        '기준일자': ['2026-08-01', '2026-08-01'], '상품코드': ['P001', 'P002'],
+        '재고박스': [3600, ''], '재고PLT': ['', 25]})),
+    'inbound': ('입고내역_템플릿.xlsx', pd.DataFrame({
+        '입고일자': ['2026-08-01', '2026-08-02'], '상품코드': ['P001', 'P002'],
+        '박스수': [1200, ''], 'PLT수': ['', 20]})),
+}
+
+
+@app.route('/template/<kind>')
+def template_download(kind):
+    if kind not in _TEMPLATES:
+        return '알 수 없는 템플릿', 404
+    fname, df = _TEMPLATES[kind]
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as w:
+        df.to_excel(w, index=False)
+    buf.seek(0)
+    return send_file(buf, download_name=fname, as_attachment=True,
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
+@app.route('/quote/<int:qid>/export')
+def quote_export(qid):
+    """견적서 엑셀 (§8): ①요약 ②원가 상세 ③적용 가정 ④물동 프로파일."""
+    q = Quote.query.get_or_404(qid)
+    err, s, r, params = _compute(q)
+    if err or not r:
+        flash(f'출력 불가: {err}', 'danger')
+        return redirect(url_for('quote_view', qid=qid))
+    _, overrides = _load(q)
+
+    sum_rows = [
+        ['견적명', q.name], ['화주사', q.customer_name or '-'],
+        ['분석기간', f"{s['period_from']} ~ {s['period_to']} ({s['biz_days']}영업일)"],
+        ['월평균 물동', f"{s['monthly_box']:,} BOX / {s['monthly_plt']:,} PLT"],
+        [], ['항목', '청구단위', '원가', '견적단가'],
+    ] + [[t['item'], t['unit'], t['cost'], t['price']] for t in r['tariff']] + [
+        [], ['종합 박스당 견적단가',
+             f"{r['final']['price_cpb_min']:,}~{r['final']['price_cpb_max']:,} 원/BOX"],
+        ['월 예상 청구액',
+         f"{r['final']['monthly_revenue_min']:,}~{r['final']['monthly_revenue_max']:,} 원"],
+        ['적용 배율', f"×{r['final']['markup']} (일반관리비 {params['admin_rate']:.0%}, 이익률 {params['margin_rate']:.0%})"],
+        [], ['※ 본 견적은 원가 기반 산정치이며, docs/DESIGN.md 의 가정·한계를 전제로 함 (부가세 별도)'],
+    ]
+
+    cost_rows = [['[작업비]', '', '', '', '', ''],
+                 ['공정', '구분', '단위', '생산성(단위/인시)', '실부담시급', '박스당 원가']]
+    for p in r['work']['processes']:
+        cost_rows.append([p['name'], p['flow'], p['unit'], p['productivity'], p['wage'], p['cost_per_box']])
+    cost_rows += [
+        ['직접작업비 합', '', '', '', '', r['work']['direct_cpb']],
+        [f"간접배부율 {r['work']['overhead_rate']:.0%} 가산 + 소모품 {r['work']['supplies_cpb']}", '', '', '', '',
+         r['work']['cost_per_box']],
+        [], ['[인력 소요]'], [r['manpower']['note']],
+        ['평시 필요인원', r['manpower']['heads_avg'], '피크 필요인원', r['manpower']['heads_p95']],
+        [], ['[보관비]'],
+        ['평균재고', f"{r['storage']['avg_stock_plt']:,} PLT", '근거', r['storage']['stock_source']],
+        ['필요 평수', r['storage']['need_py'], '평당 유효적재', r['storage']['eff_plt_per_py']],
+        ['PLT·월 단가', r['storage']['plt_month_rate'], '월 보관비', r['storage']['monthly_cost']],
+        ['박스당 배부', r['storage']['cost_per_box']],
+        [], ['[배송비]'],
+        ['모드', r['delivery']['mode'], '단가', f"{r['delivery']['min']}~{r['delivery']['max']} 원/BOX"],
+        ['근거', r['delivery']['note']],
+        [], ['[민감도]'], ['시나리오', '원가/BOX', '견적/BOX', '기준 대비'],
+    ] + [[x['label'], x['cost_cpb'], x['price_cpb'], f"{x['delta_pct']:+}%"] for x in r['sensitivity']]
+
+    assum_rows = [['키', '값', '항목', '가정번호', '견적별 수정', '설명']]
+    for c in CostParam.query.order_by(CostParam.sort_order).all():
+        ov = overrides.get('param:' + c.key)
+        assum_rows.append([c.key, params.get(c.key), c.label, c.assumption or '',
+                           ov if ov is not None else '', c.description or ''])
+    for k in sorted(overrides):
+        if k.startswith('p:'):
+            assum_rows.append([k, overrides[k], '물동 프로파일 수동 보정', '', '✔', ''])
+
+    prof_rows = [['지표', '값'],
+                 ['월평균 출고 BOX', s['monthly_box']], ['월평균 출고 PLT', s['monthly_plt']],
+                 ['일평균 BOX', s['avg_day_box']], ['피크(P95) BOX', s['p95_day_box']],
+                 ['피크배율', s['peak_ratio']], ['일평균 주문수', s['orders_per_day']],
+                 ['주문당 BOX', s['box_per_order']], ['주문당 라인수', s['lines_per_order']],
+                 ['PLT입수(가중평균)', s['boxes_per_plt']], ['PLT입수 커버리지(%)', s['ppb_coverage']],
+                 ['평균재고 PLT', s['avg_stock_plt']], ['재고 근거', s['stock_source']],
+                 ['입고 근거', s['inbound_source']],
+                 [], ['권역 분포(%)', '']] + \
+                [[k, v] for k, v in (s.get('region_share') or {}).items()] + \
+                [[], ['경고', '']] + [[w, ''] for w in (s.get('warnings') or [])]
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as w:
+        pd.DataFrame(sum_rows).to_excel(w, index=False, header=False, sheet_name='견적 요약')
+        pd.DataFrame(cost_rows).to_excel(w, index=False, header=False, sheet_name='원가 상세')
+        pd.DataFrame(assum_rows).to_excel(w, index=False, header=False, sheet_name='적용 가정')
+        pd.DataFrame(prof_rows).to_excel(w, index=False, header=False, sheet_name='물동 프로파일')
+    buf.seek(0)
+    fname = f"표준단가견적_{(q.customer_name or q.name)}.xlsx"
+    return send_file(buf, download_name=fname, as_attachment=True,
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
+# ─── 마스터 관리 ─────────────────────────────────────────────────────────────
+
+@app.route('/masters', methods=['GET'])
+def masters():
+    return render_template('masters.html',
+                           params=CostParam.query.order_by(CostParam.sort_order).all(),
+                           processes=WorkProcess.query.order_by(WorkProcess.sort_order).all(),
+                           regions=RegionRate.query.order_by(RegionRate.sido).all(),
+                           all_sido=pe.ALL_SIDO)
+
+
+@app.route('/masters/params', methods=['POST'])
+def masters_params():
+    for c in CostParam.query.all():
+        v = request.form.get('param:' + c.key)
+        if v is not None and v.strip() != '':
+            try:
+                c.value = float(v)
+            except ValueError:
+                pass
+    db.session.commit()
+    flash('원가 파라미터를 저장했습니다.', 'success')
+    return redirect(url_for('masters'))
+
+
+@app.route('/masters/process/add', methods=['POST'])
+def process_add():
+    try:
+        db.session.add(WorkProcess(
+            name=request.form['name'].strip(),
+            flow=request.form.get('flow', '출고'),
+            unit=request.form.get('unit', 'BOX'),
+            productivity=float(request.form['productivity']),
+            worker_type=request.form.get('worker_type', '일용'),
+            memo=request.form.get('memo', '').strip(),
+            sort_order=int(request.form.get('sort_order') or 99),
+        ))
+        db.session.commit()
+        flash('공정을 추가했습니다.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'추가 실패: {e}', 'danger')
+    return redirect(url_for('masters'))
+
+
+@app.route('/masters/process/<int:pid>/update', methods=['POST'])
+def process_update(pid):
+    p = WorkProcess.query.get_or_404(pid)
+    try:
+        p.name = request.form.get('name', p.name).strip()
+        p.flow = request.form.get('flow', p.flow)
+        p.unit = request.form.get('unit', p.unit)
+        p.productivity = float(request.form.get('productivity') or p.productivity)
+        p.worker_type = request.form.get('worker_type', p.worker_type)
+        p.is_active = request.form.get('is_active') == 'on'
+        db.session.commit()
+        flash('공정을 수정했습니다.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'수정 실패: {e}', 'danger')
+    return redirect(url_for('masters'))
+
+
+@app.route('/masters/process/<int:pid>/delete', methods=['POST'])
+def process_delete(pid):
+    db.session.delete(WorkProcess.query.get_or_404(pid))
+    db.session.commit()
+    flash('공정을 삭제했습니다.', 'warning')
+    return redirect(url_for('masters'))
+
+
+@app.route('/masters/regions', methods=['POST'])
+def masters_regions():
+    for sido in pe.ALL_SIDO:
+        v = request.form.get('region:' + sido)
+        if v is None:
+            continue
+        v = v.strip()
+        row = RegionRate.query.get(sido)
+        if v == '':
+            if row:
+                db.session.delete(row)
             continue
         try:
-            float(val)
+            rate = float(v)
         except ValueError:
-            flash(f'{desc}: 숫자를 입력해주세요.', 'danger')
-            return redirect(url_for('work_cost_master'))
-        cfg = SystemConfig.query.filter_by(key=key).first()
-        if cfg:
-            cfg.value = val
+            continue
+        if row:
+            row.cost_per_box = rate
         else:
-            db.session.add(SystemConfig(key=key, value=val, description=desc))
+            db.session.add(RegionRate(sido=sido, cost_per_box=rate))
     db.session.commit()
-    flash('작업비 설정이 저장되었습니다.', 'success')
-    return redirect(url_for('work_cost_master'))
+    flash('권역 단가표를 저장했습니다.', 'success')
+    return redirect(url_for('masters'))
 
 
-# ─── 물류비 (배송단가 시스템 연동) ────────────────────────────────────────────
+# ─── 설계 문서 ───────────────────────────────────────────────────────────────
 
-@app.route('/masters/delivery-link')
-def delivery_master():
-    dp_dir = _cfg_str('delivery_pricing_dir')
-    refresh = request.args.get('refresh') == '1'
-    sel_cid = request.args.get('customer_id', type=int)
-
-    customers, summary, link_error = [], None, None
-    if dp_dir and os.path.isdir(dp_dir):
-        try:
-            customers = delivery_link.list_customers(dp_dir, refresh=refresh)
-        except Exception as e:
-            link_error = f'배송단가 시스템 연동 실패: {e}'
-        if sel_cid and not link_error:
-            try:
-                summary = delivery_link.get_summary(dp_dir, sel_cid, refresh=refresh)
-            except Exception as e:
-                link_error = f'배송단가 조회 실패: {e}'
-    elif dp_dir:
-        link_error = f'배송단가 시스템 폴더를 찾을 수 없습니다: {dp_dir}'
-    else:
-        link_error = '배송단가 시스템 폴더 경로가 설정되지 않았습니다.'
-
-    return render_template('delivery_master.html',
-                           dp_dir=dp_dir, customers=customers,
-                           sel_cid=sel_cid, summary=summary, link_error=link_error)
-
-
-@app.route('/masters/delivery-link/config', methods=['POST'])
-def delivery_master_config():
-    val = request.form.get('dp_dir', '').strip()
-    if not val:
-        flash('폴더 경로를 입력해주세요.', 'danger')
-        return redirect(url_for('delivery_master'))
-    cfg = SystemConfig.query.filter_by(key='delivery_pricing_dir').first()
-    if cfg:
-        cfg.value = val
-    else:
-        db.session.add(SystemConfig(key='delivery_pricing_dir', value=val,
-                                    description='배송비 단가 시스템(delivery_pricing) 폴더 경로 — 물류비 연동에 사용'))
-    db.session.commit()
-    flash('배송단가 시스템 경로가 저장되었습니다.', 'success')
-    return redirect(url_for('delivery_master'))
-
-
-# ─── 보관비 마스터 ────────────────────────────────────────────────────────────
-
-@app.route('/masters/storage')
-def storage_master():
-    rows = StorageCenter.query.order_by(StorageCenter.center_name).all()
-    return render_template('storage_cost.html', rows=rows)
-
-
-@app.route('/masters/storage/add', methods=['POST'])
-def storage_add():
-    name = request.form.get('center_name', '').strip()
-    rent_str = request.form.get('monthly_rent', '0').replace(',', '').strip() or '0'
-    mgmt_str = request.form.get('monthly_mgmt', '0').replace(',', '').strip() or '0'
-    capa_str = request.form.get('effective_plt_capa', '').replace(',', '').strip()
-    occ_str = request.form.get('target_occupancy', '85').strip() or '85'
-    memo = request.form.get('memo', '').strip()
-    if not name or not capa_str:
-        flash('센터명과 유효 CAPA를 입력해주세요.', 'danger')
-        return redirect(url_for('storage_master'))
-    try:
-        rent = int(float(rent_str))
-        mgmt = int(float(mgmt_str))
-        capa = int(float(capa_str))
-        occ = float(occ_str)
-        if capa <= 0 or not (0 < occ <= 100):
-            raise ValueError('CAPA는 0보다 크고 가동률은 0~100% 사이여야 합니다.')
-        existing = StorageCenter.query.filter_by(center_name=name).first()
-        if existing:
-            existing.monthly_rent = rent
-            existing.monthly_mgmt = mgmt
-            existing.effective_plt_capa = capa
-            existing.target_occupancy = occ
-            existing.memo = memo
-            flash(f'[{name}] 보관비 원가가 업데이트되었습니다.', 'success')
-        else:
-            db.session.add(StorageCenter(
-                center_name=name, monthly_rent=rent, monthly_mgmt=mgmt,
-                effective_plt_capa=capa, target_occupancy=occ, memo=memo))
-            flash(f'[{name}] 보관비 원가가 등록되었습니다.', 'success')
-        db.session.commit()
-    except Exception as e:
-        flash(f'오류: {e}', 'danger')
-    return redirect(url_for('storage_master'))
-
-
-@app.route('/masters/storage/<int:sid>/delete', methods=['POST'])
-def storage_delete(sid):
-    s = StorageCenter.query.get_or_404(sid)
-    name = s.center_name
-    db.session.delete(s)
-    db.session.commit()
-    flash(f'[{name}] 보관비 원가가 삭제되었습니다.', 'warning')
-    return redirect(url_for('storage_master'))
+@app.route('/design')
+def design_doc():
+    import markdown
+    path = os.path.join(_BASE, 'docs', 'DESIGN.md')
+    with open(path, encoding='utf-8') as f:
+        html = markdown.markdown(f.read(), extensions=['tables', 'fenced_code'])
+    return render_template('design.html', doc_html=html)
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    app.run(host='0.0.0.0', port=5001, debug=True)
