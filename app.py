@@ -311,7 +311,18 @@ def quote_override(qid):
     """프로파일 보정값 · 파라미터 오버라이드 · 배송 설정 저장."""
     q = Quote.query.get_or_404(qid)
     _, overrides = _load(q)
-    if request.form.get('stage_form'):      # 체크박스는 미체크 시 미전송 → marker로 일괄 재구성
+    if request.form.get('partial'):
+        # 카드별 수정 팝업: 제출된 키만 갱신 (다른 스테이지 설정은 보존).
+        # 팝업 JS가 체크박스를 명시적 '1'/'0' hidden 필드로 변환해 보낸다.
+        for k, v in request.form.items():
+            if k.startswith(('proc_off:', 'proc_on:')):
+                if v == '1':
+                    overrides[k] = '1'
+                else:
+                    overrides.pop(k, None)
+            elif k in ('use_storage', 'use_transfer', 'use_parcel'):
+                overrides[k] = '1' if v == '1' else '0'
+    elif request.form.get('stage_form'):    # 체크박스는 미체크 시 미전송 → marker로 일괄 재구성
         overrides['use_storage'] = '1' if request.form.get('use_storage') else '0'
         overrides['use_transfer'] = '1' if request.form.get('use_transfer') else '0'
         overrides['use_parcel'] = '1' if request.form.get('use_parcel') else '0'
@@ -321,7 +332,8 @@ def quote_override(qid):
             if k.startswith(('proc_off:', 'proc_on:')):
                 overrides[k] = '1'
     for k, v in request.form.items():
-        if k in ('csrf', 'stage_form', 'use_storage', 'use_transfer', 'use_parcel') or k.startswith(('proc_off:', 'proc_on:')):
+        if k in ('csrf', 'stage_form', 'partial', 'next',
+                 'use_storage', 'use_transfer', 'use_parcel') or k.startswith(('proc_off:', 'proc_on:')):
             continue
         v = v.strip()
         if k.startswith(('p:', 'param:')):
@@ -480,8 +492,7 @@ def quote_export(qid):
          for p in r['work']['processes']] + [
         [], ['[인력 소요]'], [r['manpower']['note']],
         ['평시 필요인원', r['manpower']['heads_avg'], '피크 필요인원', r['manpower']['heads_p95']],
-        [], ['[민감도 — 월 예상 청구액 기준]'], ['시나리오', '월 청구액', '기준 대비'],
-    ] + [[x['label'], x['monthly'], f"{x['delta_pct']:+}%"] for x in r['sensitivity']]
+    ]
 
     assum_rows = [['키', '값', '항목', '가정번호', '견적별 수정', '설명']]
     for c in CostParam.query.order_by(CostParam.sort_order).all():

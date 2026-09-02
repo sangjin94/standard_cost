@@ -574,32 +574,6 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
              'profit_amount_min': round(monthly_min * margin), 'profit_amount_max': round(monthly_max * margin),
              'monthly_box': monthly_box, 'in_plt_month': round(in_plt_month)}
 
-    # ── 민감도 (§5.5) — 월 예상 청구액 기준 ─────────────────────────────────
-    base_avg = (monthly_min + monthly_max) / 2 or 1
-    sens = []
-    for label, f in [
-        ('물동 −20%', {'volume': 0.8}), ('물동 +20%', {'volume': 1.2}),
-        ('생산성 −10%', {'prod': 0.9}), ('재고 +30%', {'stock': 1.3}),
-        ('가동률 70%', {'occ': 0.70}),
-    ]:
-        v  = f.get('volume', 1.0)
-        pr = f.get('prod', 1.0)
-        stk = f.get('stock', 1.0)
-        oc = f.get('occ')
-        rev = 0.0
-        if in_procs:
-            rev += _final(inbound_core / pr + cust_sum['inbound']) * in_plt_month * v
-        if st['storage']:
-            eff2 = params['plt_per_py'] * (oc if oc is not None else params['occupancy'])
-            rate2 = ((params['rent_per_py'] + params['mgmt_per_py']) / eff2) if eff2 else 0
-            rev += _final(rate2 + cust_sum['storage']) * avg_stock * stk
-        if out_procs:
-            rev += _final(outbound_direct_cpb / pr * (1 + oh) + supplies_cpb
-                          + cust_sum['outbound']) * monthly_box * v
-        rev += _final((dv_cost_min + dv_cost_max) / 2) * monthly_box * v
-        sens.append({'label': label, 'monthly': round(rev),
-                     'delta_pct': round((rev / base_avg - 1) * 100, 1)})
-
     return {
         'stages': stages_out,
         'work': {'processes': proc_rows,
@@ -610,7 +584,6 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
         'delivery': deliv,
         'final': final,
         'tariff': tariff,
-        'sensitivity': sens,
         'inputs': {'monthly_box': monthly_box, 'monthly_plt': monthly_plt,
                    'boxes_per_plt': bpp, 'markup': round(markup, 4)},
     }

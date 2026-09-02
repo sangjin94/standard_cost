@@ -20,11 +20,14 @@
              cursor:pointer; transition:transform .12s, box-shadow .12s; }
 .flow-card:hover { transform:translateY(-3px); box-shadow:0 6px 18px rgba(19,78,74,.14); }
 .flow-card:focus-visible { outline:3px solid #14b8a6; outline-offset:2px; }
-.flow-card.off { border-style:dashed; background:#f7f9f8; box-shadow:none; opacity:.62; cursor:default; }
+.flow-card.off { border-style:dashed; background:#f7f9f8; box-shadow:none; opacity:.72; cursor:default; }
 .flow-card.off:hover { transform:none; box-shadow:none; }
 .flow-head { background:linear-gradient(135deg,#14b8a6,#0d9488); color:#fff; padding:.55rem .9rem;
              font-weight:700; font-size:.9rem; display:flex; align-items:center; gap:.45rem; }
 .flow-card.off .flow-head { background:#94a3b8; }
+.edit-btn { background:rgba(255,255,255,.22); border:none; color:#fff; border-radius:6px;
+            padding:.1rem .45rem; font-size:.78rem; line-height:1.4; }
+.edit-btn:hover { background:rgba(255,255,255,.4); }
 .flow-price { padding:.7rem .9rem .35rem; }
 .flow-price .v { font-size:1.3rem; font-weight:700; color:#134e4a; line-height:1.15; }
 .flow-price .u { font-size:.72rem; color:#64748b; }
@@ -48,7 +51,7 @@
 <div class="card mb-4">
   <div class="card-header d-flex justify-content-between">
     <span><i class="bi bi-diagram-3 me-1"></i> STEP 1 — 물류 프로세스별 원가 <span class="text-muted fw-normal small">(마진 미포함 순수 원가)</span></span>
-    <span class="text-muted small fw-normal"><i class="bi bi-hand-index me-1"></i>카드를 클릭하면 계산 과정을 볼 수 있습니다 · 흐리게 = 미사용</span>
+    <span class="text-muted small fw-normal">카드 클릭 = 계산 과정 · <i class="bi bi-pencil-square"></i> = 이 항목의 산정 조건 수정</span>
   </div>
   <div class="card-body pb-2">
     <div class="flow-wrap">
@@ -65,8 +68,9 @@
                title="계산 과정 보기"{% endif %}>
             <div class="flow-head"><i class="bi {{ sg.icon }}"></i>{{ sg.name }}
               {% if sg.key == 'delivery' and result.transfer.enabled %}<span class="badge text-bg-light text-secondary ms-1" style="font-size:.62rem">이고 포함</span>{% endif %}
-              {% if not sg.enabled %}<span class="badge text-bg-light text-secondary ms-auto">미사용</span>
-              {% else %}<i class="bi bi-search ms-auto" style="font-size:.75rem;opacity:.75"></i>{% endif %}</div>
+              {% if not sg.enabled %}<span class="badge text-bg-light text-secondary ms-auto me-1">미사용</span>{% endif %}
+              <button type="button" class="edit-btn {% if sg.enabled %}ms-auto{% endif %}" title="{{ sg.name }} 산정 조건 수정"
+                      onclick="openEdit(event, 'edit-{{ sg.key }}')"><i class="bi bi-pencil-square"></i> 수정</button></div>
             <div class="flow-price">
               {% if sg.enabled %}
                 <span class="v">{{ '{:,}'.format(sg.cost) if sg.cost is number else sg.cost }}</span>
@@ -92,14 +96,14 @@
   </div>
 </div>
 
-{# 계산 과정 모달 #}
+{# ── 계산 과정 모달 ── #}
 {% for sg in result.stages if sg.enabled %}
 <div class="modal fade" id="trace-{{ sg.key }}" tabindex="-1">
   <div class="modal-dialog modal-lg modal-dialog-scrollable">
     <div class="modal-content">
       <div class="modal-header" style="background:linear-gradient(135deg,#14b8a6,#0d9488);color:#fff">
         <h5 class="modal-title" style="font-size:1rem"><i class="bi {{ sg.icon }} me-2"></i>{{ sg.name }} — 계산 과정
-          <span class="ms-2 fw-normal" style="font-size:.8rem;opacity:.85">{{ '{:,}'.format(sg.price) if sg.price is number else sg.price }} {{ sg.unit }}</span></h5>
+          <span class="ms-2 fw-normal" style="font-size:.8rem;opacity:.85">원가 {{ '{:,}'.format(sg.cost) if sg.cost is number else sg.cost }} {{ sg.unit }}</span></h5>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body p-0">
@@ -122,8 +126,157 @@
 </div>
 {% endfor %}
 
+{# ── 카드별 산정 조건 수정 모달 (부분 저장 — 다른 항목 설정은 보존) ── #}
+{% macro edit_modal(key, title, icon) %}
+<div class="modal fade" id="edit-{{ key }}" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('quote_override', qid=q.id) }}" class="stage-edit">
+        <input type="hidden" name="partial" value="1">
+        <input type="hidden" name="next" value="result">
+        <div class="modal-header py-2" style="background:#134e4a;color:#fff">
+          <h6 class="modal-title"><i class="bi {{ icon }} me-2"></i>{{ title }} — 산정 조건 수정</h6>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          {{ caller() }}
+        </div>
+        <div class="modal-footer py-2">
+          <span class="small text-muted me-auto">전체 조건은 <a href="{{ url_for('quote_setup', qid=q.id) }}">② 산정 조건</a>에서</span>
+          <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">취소</button>
+          <button class="btn btn-sm btn-primary"><i class="bi bi-arrow-repeat me-1"></i>저장하고 재계산</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+{% call edit_modal('inbound', '입고 작업비', 'bi-box-arrow-in-down') %}
+  <div class="fw-semibold small mb-2">이 견적에 적용할 입고 공정</div>
+  {% for p in all_processes if p.flow == '입고' %}
+  <div class="form-check mb-1">
+    <input class="form-check-input proc-edit" type="checkbox" id="ein{{ p.id }}"
+           data-off-name="proc_off:{{ p.id }}" data-on-name="proc_on:{{ p.id }}"
+           data-default="{{ '1' if p.is_active else '0' }}"
+           {% if (p.is_active and p.id not in stage_conf[1]) or (not p.is_active and p.id in stage_conf[2]) %}checked{% endif %}>
+    <label class="form-check-label small" for="ein{{ p.id }}">{{ p.name }}
+      <span class="text-muted">({{ p.productivity }}{{ p.unit }}/시 · {{ p.worker_type }})</span>
+      {% if not p.is_active %}<span class="badge text-bg-warning">옵션</span>{% endif %}</label>
+  </div>
+  {% endfor %}
+  <div class="small text-muted mt-2">시급·생산성 등 숫자는 <a href="{{ url_for('masters') }}">원가 마스터</a> 또는 ②화면 파라미터 보정에서</div>
+{% endcall %}
+
+{% call edit_modal('storage', '보관비', 'bi-building') %}
+  <div class="form-check form-switch mb-2">
+    <input class="form-check-input tgl" type="checkbox" id="esUse" data-name="use_storage"
+           {% if stage_conf[0].storage %}checked{% endif %}>
+    <label class="form-check-label fw-semibold small" for="esUse">보관 사용 (끄면 크로스도킹 화주 — 보관비 제외)</label>
+  </div>
+  <label class="form-label small mb-1">청구 단위 (A17)</label>
+  <select name="storage_bill" class="form-select form-select-sm mb-2">
+    <option value="plt" {% if stage_conf[0].storage_bill == 'plt' %}selected{% endif %}>PLT당 (원/PLT·월)</option>
+    <option value="box" {% if stage_conf[0].storage_bill == 'box' %}selected{% endif %}>박스당 (원/BOX)</option>
+    <option value="py"  {% if stage_conf[0].storage_bill == 'py'  %}selected{% endif %}>계약 평당 (원/평·월)</option>
+    <option value="loc" {% if stage_conf[0].storage_bill == 'loc' %}selected{% endif %}>로케이션당 (원/셀·월)</option>
+  </select>
+  <div class="row g-2">
+    {% for pk, label in [('param:rent_per_py','임차료 (원/평·월)'), ('param:mgmt_per_py','관리비·수도광열 (원/평·월)'),
+                          ('param:plt_per_py','평당 유효 적재 (PLT/평)'), ('param:occupancy','목표 가동률 (0~1)')] %}
+    <div class="col-6">
+      <label class="form-label small mb-1">{{ label }}</label>
+      <div class="input-group input-group-sm">
+        <span class="input-group-text" style="min-width:64px">{{ params[pk[6:]] }}</span>
+        <input name="{{ pk }}" class="form-control" placeholder="보정값" value="{{ overrides.get(pk, '') }}">
+      </div>
+    </div>
+    {% endfor %}
+    <div class="col-6">
+      <label class="form-label small mb-1">평균재고 보정 (PLT)</label>
+      <div class="input-group input-group-sm">
+        <span class="input-group-text" style="min-width:64px">{{ '{:,}'.format(s.avg_stock_plt) }}</span>
+        <input name="p:avg_stock_plt" class="form-control" placeholder="보정값" value="{{ overrides.get('p:avg_stock_plt', '') }}">
+      </div>
+    </div>
+  </div>
+  <div class="small text-muted mt-2">빈칸 = 마스터 기본값/추출값 사용</div>
+{% endcall %}
+
+{% call edit_modal('outbound', '출고 작업비', 'bi-box-arrow-up') %}
+  <div class="fw-semibold small mb-2">이 견적에 적용할 출고 공정</div>
+  {% for p in all_processes if p.flow == '출고' %}
+  <div class="form-check mb-1">
+    <input class="form-check-input proc-edit" type="checkbox" id="eout{{ p.id }}"
+           data-off-name="proc_off:{{ p.id }}" data-on-name="proc_on:{{ p.id }}"
+           data-default="{{ '1' if p.is_active else '0' }}"
+           {% if (p.is_active and p.id not in stage_conf[1]) or (not p.is_active and p.id in stage_conf[2]) %}checked{% endif %}>
+    <label class="form-check-label small" for="eout{{ p.id }}">{{ p.name }}
+      <span class="text-muted">({{ p.productivity }}{{ p.unit }}/시 · {{ p.worker_type }})</span>
+      {% if not p.is_active %}<span class="badge text-bg-warning">옵션</span>{% endif %}</label>
+  </div>
+  {% endfor %}
+  <div class="small text-muted mt-2">시급·생산성·간접배부율·소모품은 <a href="{{ url_for('masters') }}">원가 마스터</a> 또는 ②화면에서</div>
+{% endcall %}
+
+{% call edit_modal('delivery', '배송비', 'bi-truck') %}
+  <label class="form-label small mb-1">산정 방식</label>
+  <select name="delivery_mode" class="form-select form-select-sm mb-2">
+    <option value="split"  {% if delivery.mode=='split'  %}selected{% endif %}>직송 / 이고+공동배송 분리</option>
+    <option value="manual" {% if delivery.mode=='manual' %}selected{% endif %}>단일 박스당 단가</option>
+    <option value="region" {% if delivery.mode=='region' %}selected{% endif %}>권역 단가표 × 물량분포</option>
+    <option value="link"   {% if delivery.mode=='link'   %}selected{% endif %}>배송비단가시스템 연동</option>
+  </select>
+  <div class="row g-2">
+    <div class="col-6">
+      <label class="form-label small mb-1">직송 단가 min~max (원/BOX)</label>
+      <div class="input-group input-group-sm">
+        <input name="direct_min" class="form-control" placeholder="min" value="{{ overrides.get('direct_min','') }}">
+        <input name="direct_max" class="form-control" placeholder="max" value="{{ overrides.get('direct_max','') }}">
+      </div>
+    </div>
+    <div class="col-6">
+      <label class="form-label small mb-1">공동배송 단가 (원/BOX)</label>
+      <div class="input-group input-group-sm">
+        <input name="joint_min" class="form-control" placeholder="min" value="{{ overrides.get('joint_min','') }}">
+        <input name="joint_max" class="form-control" placeholder="max" value="{{ overrides.get('joint_max','') }}">
+      </div>
+    </div>
+    <div class="col-6">
+      <label class="form-label small mb-1">단일 단가 (원/BOX)</label>
+      <div class="input-group input-group-sm">
+        <input name="manual_min" class="form-control" placeholder="min" value="{{ overrides.get('manual_min','') }}">
+        <input name="manual_max" class="form-control" placeholder="max" value="{{ overrides.get('manual_max','') }}">
+      </div>
+    </div>
+    <div class="col-6">
+      <div class="form-check form-switch mt-1">
+        <input class="form-check-input tgl" type="checkbox" id="edParcel" data-name="use_parcel"
+               {% if stage_conf[0].parcel %}checked{% endif %}>
+        <label class="form-check-label small fw-semibold" for="edParcel">택배 사용 (A29)</label>
+      </div>
+      <div class="input-group input-group-sm">
+        <input name="parcel_cost" class="form-control" placeholder="택배사 계약원가" value="{{ overrides.get('parcel_cost','') }}">
+        <span class="input-group-text">원/BOX</span>
+      </div>
+    </div>
+    <div class="col-6">
+      <div class="form-check form-switch mt-1">
+        <input class="form-check-input tgl" type="checkbox" id="edTransfer" data-name="use_transfer"
+               {% if stage_conf[0].transfer %}checked{% endif %}>
+        <label class="form-check-label small fw-semibold" for="edTransfer">이고(횡지) 사용</label>
+      </div>
+      <div class="input-group input-group-sm">
+        <input name="transfer_per_plt" class="form-control" placeholder="이고 단가" value="{{ overrides.get('transfer_per_plt','') }}">
+        <span class="input-group-text">원/PLT</span>
+      </div>
+    </div>
+  </div>
+  <div class="small text-muted mt-2">택배 화주 = 택배+직송뿐(공동·이고 자동 제외) · 분리 모드 비율은 데이터 추출(①화면 보정 가능)</div>
+{% endcall %}
+
 <div class="row g-3 mb-4">
-  <div class="col-md-5">
+  <div class="col-md-6">
     <div class="card h-100">
       <div class="card-header"><i class="bi bi-receipt me-1"></i> STEP 2 — 마진 적용 → 최종 견적 단가표</div>
       <div class="card-body py-2 px-3" style="background:#f0fdfa;border-bottom:1px solid #ccfbf1">
@@ -177,47 +330,42 @@
       </div>
     </div>
   </div>
-  <div class="col-md-4">
+  <div class="col-md-3">
     <div class="card h-100">
       <div class="card-header"><i class="bi bi-people me-1"></i> 인력 소요 (참고)</div>
       <div class="card-body small">
-        <div class="d-flex justify-content-between py-1 border-bottom"><span>평시 필요 인원</span><b>{{ result.manpower.heads_avg }}명 (일 {{ result.manpower.day_manhours_avg }}인시)</b></div>
+        <div class="d-flex justify-content-between py-1 border-bottom"><span>평시 필요 인원</span><b>{{ result.manpower.heads_avg }}명</b></div>
         <div class="d-flex justify-content-between py-1 border-bottom"><span>피크일(P95) 필요 인원</span><b>{{ result.manpower.heads_p95 }}명</b></div>
+        <div class="d-flex justify-content-between py-1 border-bottom"><span>일 투입 인시</span><b>{{ result.manpower.day_manhours_avg }}인시</b></div>
         <div class="text-muted mt-2">{{ result.manpower.note }}</div>
       </div>
     </div>
   </div>
 </div>
-
-<div class="card mb-4">
-  <div class="card-header"><i class="bi bi-tools me-1"></i> 작업 공정 상세 (§5.1)</div>
-  <div class="card-body p-0"><div class="table-responsive">
-    <table class="table table-sm mb-0">
-      <thead><tr><th class="ps-3">공정</th><th>구분</th><th>생산성</th><th>실부담시급</th><th>원/단위</th><th>일 인시</th></tr></thead>
-      <tbody>
-      {% for p in result.work.processes %}
-        <tr><td class="ps-3">{{ p.name }}</td><td><span class="badge text-bg-{{ 'info' if p.flow=='입고' else 'success' }}">{{ p.flow }}</span></td>
-            <td>{{ p.productivity }} {{ p.unit }}/시</td><td>{{ '{:,}'.format(p.wage) }}</td>
-            <td>{{ '{:,}'.format(p.unit_cost) }}</td><td>{{ p.day_manhours }}</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div></div>
-</div>
-
-<div class="card mb-4">
-  <div class="card-header"><i class="bi bi-activity me-1"></i> 민감도 시나리오 (§5.5) <span class="text-muted fw-normal small ms-1">— 월 예상 청구액 기준, 최소물동 보장·구간단가 협상 근거</span></div>
-  <div class="card-body p-0"><div class="table-responsive">
-    <table class="table table-sm mb-0">
-      <thead><tr><th class="ps-3">시나리오</th><th>월 예상 청구액</th><th>기준 대비</th></tr></thead>
-      <tbody>
-      {% for x in result.sensitivity %}
-        <tr><td class="ps-3">{{ x.label }}</td><td>{{ '{:,}'.format(x.monthly) }}원</td>
-            <td class="{{ 'text-danger' if x.delta_pct > 0 else 'text-success' }}">{{ '%+.1f'|format(x.delta_pct) }}%</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div></div>
-</div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+function openEdit(ev, id) {
+  ev.stopPropagation();
+  bootstrap.Modal.getOrCreateInstance(document.getElementById(id)).show();
+}
+// 수정 팝업 제출: 체크박스를 명시적 '1'/'0' hidden 필드로 변환 (부분 저장 프로토콜)
+document.querySelectorAll('form.stage-edit').forEach(f => f.addEventListener('submit', () => {
+  f.querySelectorAll('.proc-edit').forEach(cb => {
+    const isDefault = cb.dataset.default === '1';
+    const name = isDefault ? cb.dataset.offName : cb.dataset.onName;   // 기본→off, 옵션→on
+    const flag = isDefault ? !cb.checked : cb.checked;
+    const h = document.createElement('input');
+    h.type = 'hidden'; h.name = name; h.value = flag ? '1' : '0';
+    f.appendChild(h);
+  });
+  f.querySelectorAll('.tgl').forEach(cb => {
+    const h = document.createElement('input');
+    h.type = 'hidden'; h.name = cb.dataset.name; h.value = cb.checked ? '1' : '0';
+    f.appendChild(h);
+  });
+}));
+</script>
 {% endblock %}
