@@ -35,6 +35,22 @@ class WorkProcess(db.Model):
     sort_order    = db.Column(db.Integer, default=0)
 
 
+class CustomCostItem(db.Model):
+    """사용자 정의 추가 원가 항목 (A30).
+
+    적용 단계(stage)에 따라 해당 견적 항목 단가에 가산된다:
+      inbound: 원/PLT · storage: 원/PLT·월 · outbound: 원/BOX · delivery: 원/BOX
+    """
+    __tablename__ = 'custom_cost_item'
+    id         = db.Column(db.Integer, primary_key=True)
+    name       = db.Column(db.String(100), nullable=False)
+    stage      = db.Column(db.String(20), nullable=False, default='outbound')
+    value      = db.Column(db.Float, nullable=False, default=0)
+    memo       = db.Column(db.String(200))
+    is_active  = db.Column(db.Boolean, default=True)
+    sort_order = db.Column(db.Integer, default=0)
+
+
 class RegionRate(db.Model):
     """배송비 모드② 권역(시도) 단가표 (가정 A19)."""
     __tablename__ = 'region_rate'

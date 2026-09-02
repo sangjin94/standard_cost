@@ -10,7 +10,7 @@ import pandas as pd
 from flask import (Flask, render_template, request, redirect, url_for,
                    flash, jsonify, send_file)
 
-from models import db, CostParam, WorkProcess, RegionRate, Quote
+from models import db, CostParam, WorkProcess, RegionRate, Quote, CustomCostItem
 import profile_extract as pe
 import engine
 
@@ -130,9 +130,12 @@ def _compute(q):
         return '출고내역을 먼저 업로드하세요.', None, None, params
     region_rates = {r.sido: r.cost_per_box for r in RegionRate.query.all()}
     stages, excluded = _stage_conf(overrides)
+    customs = [{'name': c.name, 'stage': c.stage, 'value': c.value, 'memo': c.memo}
+               for c in CustomCostItem.query.filter_by(is_active=True)
+                                      .order_by(CustomCostItem.sort_order, CustomCostItem.id)]
     try:
         result = engine.compute(s, params, _processes(excluded), region_rates,
-                                _delivery_conf(overrides), stages)
+                                _delivery_conf(overrides), stages, customs)
     except ValueError as e:
         return str(e), s, None, params
     return None, s, result, params
@@ -491,13 +494,68 @@ def quote_export(qid):
 
 # ─── 마스터 관리 ─────────────────────────────────────────────────────────────
 
+PARAM_GROUPS = ['인건비', '물동', '보관', '배송', '간접']
+CUSTOM_STAGES = [('inbound', '입고 작업비', '원/PLT'), ('storage', '보관비', '원/PLT·월'),
+                 ('outbound', '출고 작업비', '원/BOX'), ('delivery', '배송비', '원/BOX')]
+
+
 @app.route('/masters', methods=['GET'])
 def masters():
+    rows = CostParam.query.order_by(CostParam.sort_order).all()
+    grouped = {g: [c for c in rows if c.group == g] for g in PARAM_GROUPS}
+    etc = [c for c in rows if c.group not in PARAM_GROUPS]
+    if etc:
+        grouped.setdefault('기타', []).extend(etc)
     return render_template('masters.html',
-                           params=CostParam.query.order_by(CostParam.sort_order).all(),
+                           grouped_params=grouped,
+                           customs=CustomCostItem.query.order_by(CustomCostItem.sort_order,
+                                                                 CustomCostItem.id).all(),
+                           custom_stages=CUSTOM_STAGES,
                            processes=WorkProcess.query.order_by(WorkProcess.sort_order).all(),
                            regions=RegionRate.query.order_by(RegionRate.sido).all(),
                            all_sido=pe.ALL_SIDO)
+
+
+@app.route('/masters/custom/add', methods=['POST'])
+def custom_add():
+    try:
+        db.session.add(CustomCostItem(
+            name=request.form['name'].strip(),
+            stage=request.form.get('stage', 'outbound'),
+            value=float(request.form['value']),
+            memo=request.form.get('memo', '').strip(),
+        ))
+        db.session.commit()
+        flash('추가 원가 항목을 등록했습니다 — 모든 견적에 즉시 반영됩니다.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'등록 실패: {e}', 'danger')
+    return redirect(url_for('masters'))
+
+
+@app.route('/masters/custom/<int:cid>/update', methods=['POST'])
+def custom_update(cid):
+    c = CustomCostItem.query.get_or_404(cid)
+    try:
+        c.name = request.form.get('name', c.name).strip()
+        c.stage = request.form.get('stage', c.stage)
+        c.value = float(request.form.get('value') or c.value)
+        c.memo = request.form.get('memo', '').strip()
+        c.is_active = request.form.get('is_active') == 'on'
+        db.session.commit()
+        flash('추가 원가 항목을 수정했습니다.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'수정 실패: {e}', 'danger')
+    return redirect(url_for('masters'))
+
+
+@app.route('/masters/custom/<int:cid>/delete', methods=['POST'])
+def custom_delete(cid):
+    db.session.delete(CustomCostItem.query.get_or_404(cid))
+    db.session.commit()
+    flash('추가 원가 항목을 삭제했습니다.', 'warning')
+    return redirect(url_for('masters'))
 
 
 @app.route('/masters/params', methods=['POST'])
