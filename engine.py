@@ -58,7 +58,15 @@ REGION_DEFS = [
 REMOVED_PARAM_KEYS = ['forklift_month', 'plt_per_forklift', 'pallet_month']
 
 DEFAULT_STAGES = {'storage': True, 'transfer': False, 'transfer_per_plt': 0.0,
-                  'parcel': False, 'parcel_cost': 0.0}
+                  'parcel': False, 'parcel_cost': 0.0, 'storage_bill': 'plt'}
+
+# 보관비 청구 단위 (A17): 월 보관비 총액은 동일, 청구 단가의 표현 단위만 다르다
+STORAGE_BILL_UNITS = {
+    'plt': 'PLT당 (원/PLT·월)',
+    'box': '박스당 (원/BOX)',
+    'py':  '계약 평당 (원/평·월)',
+    'loc': '로케이션당 (원/셀·월)',
+}
 
 
 def hourly_cost(params, worker_type):
@@ -215,8 +223,41 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
          'expr': f"평균재고 {_w(avg_stock)}PLT ({s['stock_source']}) · 필요 {_w(need_py)}평",
          'val': f"{_w(monthly_storage)}원/월"},
     ]
+    # 청구 단위 환산 (A17): 총액은 같고 단가 표현만 달라진다
+    bill = st.get('storage_bill') or 'plt'
+    if bill not in STORAGE_BILL_UNITS:
+        bill = 'plt'
+    py_rate = (params['rent_per_py'] + params['mgmt_per_py']) + cust_sum['storage'] * eff_plt_per_py
+    loc_cnt = math.ceil(avg_stock)
+    _bills = {
+        'plt': {'unit': '원/PLT·월', 'rate': plt_month_rate, 'qty': avg_stock,
+                'qty_label': f"평균재고 {_w(avg_stock)}PLT",
+                'expr': '기본 산식 그대로 (PLT·월)'},
+        'box': {'unit': '원/BOX', 'rate': storage_cpb, 'qty': monthly_box,
+                'qty_label': f"월 출고 {_w(monthly_box)}BOX",
+                'expr': f"월 보관비 {_w(monthly_storage)}원 ÷ 월 출고 {_w(monthly_box)}BOX"},
+        'py':  {'unit': '원/평·월', 'rate': py_rate, 'qty': need_py,
+                'qty_label': f"계약 {_w(need_py)}평",
+                'expr': f"(임차 {_w(params['rent_per_py'])} + 관리 {_w(params['mgmt_per_py'])})원/평"
+                        + (f" + 추가 {_w(cust_sum['storage'])}×{eff_plt_per_py:.2f}" if cust_sum['storage'] else '')},
+        'loc': {'unit': '원/셀·월', 'rate': plt_month_rate, 'qty': loc_cnt,
+                'qty_label': f"점유 로케이션 {_w(loc_cnt)}셀",
+                'expr': f"PLT·월 단가와 동일 (셀 1칸 = PLT 1자리) × 점유 {_w(loc_cnt)}셀"},
+    }
+    _b = _bills[bill]
+    if st['storage'] and bill != 'plt':
+        stor_trace.append({'label': f"청구 단위 환산 (A17 — {STORAGE_BILL_UNITS[bill]})",
+                           'expr': _b['expr'],
+                           'val': f"{_w(_b['rate'], 1 if bill == 'box' else 0)}{_b['unit']}"})
+        stor_trace.append({'label': '청구 기준 물동', 'expr': _b['qty_label'],
+                           'val': f"월 {_w(_b['rate'] * _b['qty'])}원"})
+
     storage = {
         'enabled': bool(st['storage']),
+        'bill': bill, 'bill_label': STORAGE_BILL_UNITS[bill],
+        'bill_unit': _b['unit'],
+        'bill_rate': round(_b['rate'], 1 if bill == 'box' else 0),
+        'bill_qty': round(_b['qty'], 1), 'bill_qty_label': _b['qty_label'],
         'avg_stock_plt': avg_stock, 'need_py': round(need_py, 1),
         'eff_plt_per_py': round(eff_plt_per_py, 2),
         'space_rate': round(rate_space),
@@ -443,14 +484,15 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
                   + [{'label': f'간접배부 {oh:.0%}', 'value': ''}],
          'trace': in_trace, 'off_reason': '입고 공정 없음'},
         {'key': 'storage', 'name': '보관비', 'icon': 'bi-building',
-         'enabled': storage['enabled'], 'unit': '원/PLT·월',
-         'cost': storage['plt_month_rate'], 'price': round(_final(storage['plt_month_rate'])),
-         'cost_min': storage['plt_month_rate'], 'cost_max': storage['plt_month_rate'],
+         'enabled': storage['enabled'], 'unit': storage['bill_unit'],
+         'cost': storage['bill_rate'], 'price': round(_final(storage['bill_rate']), 1 if bill == 'box' else 0),
+         'cost_min': storage['bill_rate'], 'cost_max': storage['bill_rate'],
          'cpb': storage['cost_per_box'],
-         'volume_label': f"평균재고 {_w(avg_stock)}PLT",
-         'monthly_cost_min': round(monthly_storage), 'monthly_cost_max': round(monthly_storage),
-         'monthly_min': round(_final(monthly_storage)),
-         'monthly_max': round(_final(monthly_storage)),
+         'volume_label': storage['bill_qty_label'],
+         'monthly_cost_min': round(_b['rate'] * _b['qty']),
+         'monthly_cost_max': round(_b['rate'] * _b['qty']),
+         'monthly_min': round(_final(_b['rate'] * _b['qty'])),
+         'monthly_max': round(_final(_b['rate'] * _b['qty'])),
          'items': [{'label': f"임차+관리비 (유효 {storage['eff_plt_per_py']}PLT/평)", 'value': f"{storage['space_rate']:,}원"},
                    {'label': f"평균재고 {storage['avg_stock_plt']:,}PLT · {storage['need_py']:,}평", 'value': ''}]
                   + [{'label': c['name'], 'value': f"+{c['value']:,.0f}원"} for c in cust['storage']],

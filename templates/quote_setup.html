@@ -23,6 +23,14 @@
           <label class="form-check-label fw-semibold" for="useStorage"><i class="bi bi-building me-1"></i>보관 사용</label>
         </div>
         <div class="small text-muted">끄면 보관비 제외 — 크로스도킹/통과형 화주. 적치 공정도 오른쪽에서 함께 제외하세요.</div>
+        <label class="form-label small mb-1 mt-2 fw-semibold">보관비 청구 단위 (A17)</label>
+        <select name="storage_bill" class="form-select form-select-sm" style="max-width:220px">
+          <option value="plt" {% if stage_conf[0].storage_bill == 'plt' %}selected{% endif %}>PLT당 (원/PLT·월)</option>
+          <option value="box" {% if stage_conf[0].storage_bill == 'box' %}selected{% endif %}>박스당 (원/BOX)</option>
+          <option value="py"  {% if stage_conf[0].storage_bill == 'py'  %}selected{% endif %}>계약 평당 (원/평·월)</option>
+          <option value="loc" {% if stage_conf[0].storage_bill == 'loc' %}selected{% endif %}>로케이션당 (원/셀·월)</option>
+        </select>
+        <div class="small text-muted mt-1">월 보관비 총액은 동일 — 견적서에 쓸 청구 단가의 단위만 달라집니다</div>
       </div>
       <div class="col-md-3">
         <div class="form-check form-switch">

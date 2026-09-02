@@ -97,6 +97,7 @@ def _stage_conf(overrides):
         'transfer_per_plt': _f('transfer_per_plt'),
         'parcel': overrides.get('use_parcel', '0') == '1',
         'parcel_cost': _f('parcel_cost'),
+        'storage_bill': overrides.get('storage_bill', 'plt'),
     }, excluded, included
 
 
@@ -329,7 +330,8 @@ def quote_override(qid):
             else:
                 overrides[k] = v
         elif k in ('delivery_mode', 'manual_min', 'manual_max', 'transfer_per_plt',
-                   'direct_min', 'direct_max', 'joint_min', 'joint_max', 'parcel_cost', 'memo'):
+                   'direct_min', 'direct_max', 'joint_min', 'joint_max', 'parcel_cost',
+                   'storage_bill', 'memo'):
             if k == 'memo':
                 q.memo = v
             elif v == '':
