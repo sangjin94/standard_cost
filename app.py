@@ -443,9 +443,11 @@ def quote_export(qid):
         ['월평균 물동', f"{s['monthly_box']:,} BOX / {s['monthly_plt']:,} PLT"],
         [], ['항목', '청구단위', '월 물동', '원가', '견적단가', '월 예상 금액'],
     ] + [[t['item'], t['unit'], t['volume'], t['cost'], t['price'], t['monthly']] for t in r['tariff']] +         [[sg['name'], '미사용', sg['off_reason'], '', '', ''] for sg in r['stages'] if not sg['enabled']] + [
-        [], ['월 예상 청구액 합계',
-             f"{r['final']['monthly_revenue_min']:,}~{r['final']['monthly_revenue_max']:,} 원"],
-        ['적용 배율', f"×{r['final']['markup']} (일반관리비 {params['admin_rate']:.0%}, 이익률 {params['margin_rate']:.0%})"],
+        [], ['① 월 원가 합계 (마진 미포함)',
+             f"{r['final']['monthly_cost_min']:,}~{r['final']['monthly_cost_max']:,} 원"],
+        ['② 마진 적용', f"원가 × {r['final']['markup']} (일반관리비 {params['admin_rate']:.0%} 가산, 목표이익률 {params['margin_rate']:.0%} 반영)"],
+        ['③ 월 예상 청구액',
+         f"{r['final']['monthly_revenue_min']:,}~{r['final']['monthly_revenue_max']:,} 원"],
         [], ['※ 견적은 종합단가 없이 위 항목별 단가로 구성됨 — docs/DESIGN.md 가정·한계 전제 (부가세 별도)'],
     ]
 
