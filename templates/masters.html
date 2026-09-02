@@ -95,7 +95,7 @@
   <div class="card-header"><i class="bi bi-tools me-1"></i> 작업 공정 (가정 A6) <span class="text-muted fw-normal small ms-1">생산성은 현장 실측으로 교체 — 표준값과 ±30% 차이가 흔함</span></div>
   <div class="card-body p-0"><div class="table-responsive">
     <table class="table table-sm mb-0 align-middle">
-      <thead><tr><th class="ps-3">공정명</th><th>구분</th><th>단위</th><th>생산성(단위/인시)</th><th>인력</th><th>사용</th><th>메모</th><th style="width:130px"></th></tr></thead>
+      <thead><tr><th class="ps-3">공정명</th><th>구분</th><th>단위</th><th>생산성(단위/인시)</th><th>인력</th><th title="해제 = 옵션 공정: 기본 견적엔 빠지고, 필요한 화주 견적에서만 체크해 사용">기본 사용 <i class="bi bi-info-circle small"></i></th><th>메모</th><th style="width:130px"></th></tr></thead>
       <tbody>
       {% for p in processes %}
         <form method="post" action="{{ url_for('process_update', pid=p.id) }}">

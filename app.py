@@ -34,6 +34,12 @@ with app.app_context():
         for i, (name, flow, unit, prod, wt, memo) in enumerate(engine.PROCESS_DEFS):
             db.session.add(WorkProcess(name=name, flow=flow, unit=unit,
                                        productivity=prod, worker_type=wt, memo=memo, sort_order=i))
+    # 옵션 공정 '입고 검수' 보강 (기존 DB에도 1회 삽입, 기본 미사용 → 견적별 opt-in)
+    if WorkProcess.query.count() > 0 and not WorkProcess.query.filter_by(name='입고 검수').first():
+        db.session.add(WorkProcess(name='입고 검수', flow='입고', unit='BOX',
+                                   productivity=150, worker_type='일용', is_active=False,
+                                   memo='A6h — 옵션 공정: 검수 입고 화주 견적에서만 체크해 사용',
+                                   sort_order=2))
     if RegionRate.query.count() == 0:
         for sido, rate in engine.REGION_DEFS:
             db.session.add(RegionRate(sido=sido, cost_per_box=rate,
@@ -58,12 +64,15 @@ def _params(overrides=None):
     return p
 
 
-def _processes(excluded_ids=None):
-    rows = WorkProcess.query.filter_by(is_active=True).order_by(WorkProcess.sort_order).all()
+def _processes(excluded_ids=None, included_ids=None):
+    """견적에 적용할 공정: 기본 공정(is_active) - 제외(proc_off) + 옵션 공정 opt-in(proc_on)."""
+    rows = WorkProcess.query.order_by(WorkProcess.sort_order).all()
     ex = set(excluded_ids or [])
+    inc = set(included_ids or [])
     return [{'id': r.id, 'name': r.name, 'flow': r.flow, 'unit': r.unit,
              'productivity': r.productivity, 'worker_type': r.worker_type}
-            for r in rows if r.id not in ex]
+            for r in rows
+            if (r.is_active and r.id not in ex) or (not r.is_active and r.id in inc)]
 
 
 def _stage_conf(overrides):
@@ -75,13 +84,15 @@ def _stage_conf(overrides):
             return default
     excluded = [int(k.split(':', 1)[1]) for k, v in overrides.items()
                 if k.startswith('proc_off:') and v]
+    included = [int(k.split(':', 1)[1]) for k, v in overrides.items()
+                if k.startswith('proc_on:') and v]
     return {
         'storage': overrides.get('use_storage', '1') != '0',
         'transfer': overrides.get('use_transfer', '0') == '1',
         'transfer_per_plt': _f('transfer_per_plt'),
         'parcel': overrides.get('use_parcel', '0') == '1',
         'parcel_cost': _f('parcel_cost'),
-    }, excluded
+    }, excluded, included
 
 
 def _load(q):
@@ -129,12 +140,12 @@ def _compute(q):
     if not s:
         return '출고내역을 먼저 업로드하세요.', None, None, params
     region_rates = {r.sido: r.cost_per_box for r in RegionRate.query.all()}
-    stages, excluded = _stage_conf(overrides)
+    stages, excluded, included = _stage_conf(overrides)
     customs = [{'name': c.name, 'stage': c.stage, 'value': c.value, 'memo': c.memo}
                for c in CustomCostItem.query.filter_by(is_active=True)
                                       .order_by(CustomCostItem.sort_order, CustomCostItem.id)]
     try:
-        result = engine.compute(s, params, _processes(excluded), region_rates,
+        result = engine.compute(s, params, _processes(excluded, included), region_rates,
                                 _delivery_conf(overrides), stages, customs)
     except ValueError as e:
         return str(e), s, None, params
@@ -201,8 +212,7 @@ def _quote_ctx(q):
                     'inbound': profile.get('inbound'),
                 },
                 delivery=_delivery_conf(overrides),
-                all_processes=WorkProcess.query.filter_by(is_active=True)
-                                         .order_by(WorkProcess.sort_order).all(),
+                all_processes=WorkProcess.query.order_by(WorkProcess.sort_order).all(),
                 stage_conf=_stage_conf(overrides),
                 dp_available=os.path.isdir(os.path.join(os.path.dirname(_BASE), 'delivery_pricing')))
 
@@ -299,13 +309,13 @@ def quote_override(qid):
         overrides['use_storage'] = '1' if request.form.get('use_storage') else '0'
         overrides['use_transfer'] = '1' if request.form.get('use_transfer') else '0'
         overrides['use_parcel'] = '1' if request.form.get('use_parcel') else '0'
-        for k in [k for k in overrides if k.startswith('proc_off:')]:
+        for k in [k for k in overrides if k.startswith(('proc_off:', 'proc_on:'))]:
             overrides.pop(k)
         for k in request.form:
-            if k.startswith('proc_off:'):
+            if k.startswith(('proc_off:', 'proc_on:')):
                 overrides[k] = '1'
     for k, v in request.form.items():
-        if k in ('csrf', 'stage_form', 'use_storage', 'use_transfer', 'use_parcel') or k.startswith('proc_off:'):
+        if k in ('csrf', 'stage_form', 'use_storage', 'use_transfer', 'use_parcel') or k.startswith(('proc_off:', 'proc_on:')):
             continue
         v = v.strip()
         if k.startswith(('p:', 'param:')):

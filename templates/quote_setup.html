@@ -43,14 +43,16 @@
           {% for p in all_processes %}
           <div class="form-check">
             <input class="form-check-input proc-keep" type="checkbox" id="pk{{ p.id }}"
-                   data-off-name="proc_off:{{ p.id }}"
-                   {% if p.id not in stage_conf[1] %}checked{% endif %}>
+                   data-off-name="proc_off:{{ p.id }}" data-on-name="proc_on:{{ p.id }}"
+                   data-default="{{ '1' if p.is_active else '0' }}"
+                   {% if (p.is_active and p.id not in stage_conf[1]) or (not p.is_active and p.id in stage_conf[2]) %}checked{% endif %}>
             <label class="form-check-label small" for="pk{{ p.id }}">
-              <span class="badge text-bg-{{ 'info' if p.flow=='입고' else 'success' }}">{{ p.flow }}</span> {{ p.name }}</label>
+              <span class="badge text-bg-{{ 'info' if p.flow=='입고' else 'success' }}">{{ p.flow }}</span> {{ p.name }}
+              {% if not p.is_active %}<span class="badge text-bg-warning" title="마스터에서 기본 미사용 — 필요한 화주 견적에서만 체크">옵션</span>{% endif %}</label>
           </div>
           {% endfor %}
         </div>
-        <div class="small text-muted mt-1">체크 해제 = 이 견적에서만 제외 (공정 자체는 <a href="{{ url_for('masters') }}">원가 마스터</a>에서 관리)</div>
+        <div class="small text-muted mt-1">체크 해제 = 이 견적에서만 제외 · <span class="badge text-bg-warning">옵션</span> 공정(예: 입고 검수)은 필요한 화주만 체크 (마스터는 <a href="{{ url_for('masters') }}">원가 마스터</a>)</div>
         <span id="procOffFields"></span>
       </div>
     </div>
@@ -204,9 +206,13 @@ document.querySelector('form[action*="override"]')?.addEventListener('submit', f
   const holder = document.getElementById('procOffFields');
   holder.innerHTML = '';
   document.querySelectorAll('.proc-keep').forEach(cb => {
-    if (!cb.checked) {
+    const isDefault = cb.dataset.default === '1';   // 기본 공정 여부
+    let name = null;
+    if (isDefault && !cb.checked) name = cb.dataset.offName;   // 기본 공정 제외
+    if (!isDefault && cb.checked) name = cb.dataset.onName;    // 옵션 공정 opt-in
+    if (name) {
       const h = document.createElement('input');
-      h.type = 'hidden'; h.name = cb.dataset.offName; h.value = '1';
+      h.type = 'hidden'; h.name = name; h.value = '1';
       holder.appendChild(h);
     }
   });
