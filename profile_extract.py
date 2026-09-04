@@ -253,33 +253,48 @@ def parse_stock(df, pm, default_ppb):
     plts  = _num_series(df, 'plt')
     codes = [_cell(v) for v in df['code'].tolist()] if 'code' in df.columns else [None] * len(df)
 
-    per_day = {}
-    box_days = 0.0          # 재고 박스·일 합 (박스·일당 청구 단위용, A17)
+    # (일자, 상품) 단위로 먼저 합산 — 상품별 PLT 분리(A32)를 위해
+    grp_box = {}    # (ds, code) → 재고박스 합
+    grp_plt = {}    # (ds, code) → 재고PLT 직접값 합
+    box_days = 0.0  # 재고 박스·일 합 (박스·일당 청구 단위용, A17)
     unmatched_box = 0.0
     for i in range(len(df)):
         d = dates.iloc[i]
         if d is None:
             continue
-        ds = str(d)
+        key = (str(d), codes[i] or '?')
         b = boxes.iloc[i]
         bv = float(b) if (b is not None and not (isinstance(b, float) and math.isnan(b)) and b > 0) else 0.0
         box_days += bv
         p = plts.iloc[i]
         if p is not None and not (isinstance(p, float) and math.isnan(p)) and p > 0:
-            per_day[ds] = per_day.get(ds, 0.0) + float(p)
-            continue
-        if bv <= 0:
-            continue
-        ppb = pm.get(codes[i]) if codes[i] else None
-        if not ppb:
-            ppb = default_ppb
-            unmatched_box += bv
-        per_day[ds] = per_day.get(ds, 0.0) + bv / ppb
+            grp_plt[key] = grp_plt.get(key, 0.0) + float(p)
+        elif bv > 0:
+            grp_box[key] = grp_box.get(key, 0.0) + bv
+
+    # 상품별 PLT 분리 (A32): 상품끼리 파렛트를 섞지 않으므로 상품·일 단위 올림.
+    # 0.3PLT 재고도 로케이션 1자리를 점유한다 — 비올림(raw) 값은 참고용으로 함께 저장
+    per_day = {}
+    per_day_raw = {}
+    for key in set(grp_box) | set(grp_plt):
+        ds, code = key
+        if key in grp_plt:
+            raw = grp_plt[key] + grp_box.get(key, 0.0) / (pm.get(code) or default_ppb)
+        else:
+            ppb = pm.get(code) if code != '?' else None
+            if not ppb:
+                ppb = default_ppb
+                unmatched_box += grp_box[key]
+            raw = grp_box[key] / ppb
+        per_day[ds] = per_day.get(ds, 0.0) + math.ceil(raw - 1e-9)
+        per_day_raw[ds] = per_day_raw.get(ds, 0.0) + raw
 
     if not per_day:
         raise ValueError('유효한 재고 행이 없습니다.')
     avg_plt = sum(per_day.values()) / len(per_day)
+    avg_plt_raw = sum(per_day_raw.values()) / len(per_day_raw)
     return {'days': len(per_day), 'avg_stock_plt': round(avg_plt, 1),
+            'avg_stock_plt_raw': round(avg_plt_raw, 1),
             'box_days': round(box_days, 1),
             'daily': {k: round(v, 1) for k, v in sorted(per_day.items())},
             'unmatched_box': round(unmatched_box, 1)}
@@ -386,6 +401,9 @@ def summarize(profile, params):
     if stock:
         avg_stock_plt = stock['avg_stock_plt']
         stock_source = f"재고 스냅샷 {stock['days']}일 평균"
+        if stock.get('avg_stock_plt_raw'):
+            stock_source += (f" — 상품별 PLT 분리(올림, A32): 순수 환산 {stock['avg_stock_plt_raw']:,}PLT"
+                             f" → 점유 {avg_stock_plt:,}PLT")
         # 일평균 재고 박스 (박스·일 청구용). 구버전 프로파일엔 box_days가 없어 입수로 추정
         if stock.get('box_days'):
             avg_stock_box = stock['box_days'] / stock['days']
