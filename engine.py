@@ -66,6 +66,7 @@ DEFAULT_STAGES = {'storage': True, 'transfer': False, 'transfer_per_plt': 0.0,
 STORAGE_BILL_UNITS = {
     'plt': 'PLT당 (원/PLT·월)',
     'box': '박스당 (원/BOX)',
+    'boxday': '재고 박스·일당 (원/박스·일)',
     'py':  '계약 평당 (원/평·월)',
     'loc': '로케이션당 (원/셀·월)',
 }
@@ -231,6 +232,10 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
         bill = 'plt'
     py_rate = (params['rent_per_py'] + params['mgmt_per_py']) + cust_sum['storage'] * eff_plt_per_py
     loc_cnt = math.ceil(avg_stock)
+    # 재고 박스·일당: 월 박스·일 = 일평균 재고 박스 × 30.4일
+    avg_stock_box = float(s.get('avg_stock_box') or 0)
+    month_box_days = avg_stock_box * 30.4
+    boxday_rate = (monthly_storage / month_box_days) if month_box_days else 0.0
     _bills = {
         'plt': {'unit': '원/PLT·월', 'rate': plt_month_rate, 'qty': avg_stock,
                 'qty_label': f"평균재고 {_w(avg_stock)}PLT",
@@ -238,6 +243,10 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
         'box': {'unit': '원/BOX', 'rate': storage_cpb, 'qty': monthly_box,
                 'qty_label': f"월 출고 {_w(monthly_box)}BOX",
                 'expr': f"월 보관비 {_w(monthly_storage)}원 ÷ 월 출고 {_w(monthly_box)}BOX"},
+        'boxday': {'unit': '원/박스·일', 'rate': boxday_rate, 'qty': month_box_days,
+                   'qty_label': f"월 재고 {_w(month_box_days)}박스·일 (일평균 {_w(avg_stock_box)}박스)",
+                   'expr': f"월 보관비 {_w(monthly_storage)}원 ÷ 월 재고 {_w(month_box_days)}박스·일"
+                           f" ({s.get('stock_box_src', '')})"},
         'py':  {'unit': '원/평·월', 'rate': py_rate, 'qty': need_py,
                 'qty_label': f"계약 {_w(need_py)}평",
                 'expr': f"(임차 {_w(params['rent_per_py'])} + 관리 {_w(params['mgmt_per_py'])})원/평"
@@ -246,11 +255,13 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
                 'qty_label': f"점유 로케이션 {_w(loc_cnt)}셀",
                 'expr': f"PLT·월 단가와 동일 (셀 1칸 = PLT 1자리) × 점유 {_w(loc_cnt)}셀"},
     }
+    if bill == 'boxday' and not month_box_days:
+        bill = 'plt'        # 재고 박스 집계가 없으면 기본 단위로 폴백
     _b = _bills[bill]
     if st['storage'] and bill != 'plt':
         stor_trace.append({'label': f"청구 단위 환산 (A17 — {STORAGE_BILL_UNITS[bill]})",
                            'expr': _b['expr'],
-                           'val': f"{_w(_b['rate'], 1 if bill == 'box' else 0)}{_b['unit']}"})
+                           'val': f"{_w(_b['rate'], 1 if bill in ('box', 'boxday') else 0)}{_b['unit']}"})
         stor_trace.append({'label': '청구 기준 물동', 'expr': _b['qty_label'],
                            'val': f"월 {_w(_b['rate'] * _b['qty'])}원"})
 
@@ -258,7 +269,7 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
         'enabled': bool(st['storage']),
         'bill': bill, 'bill_label': STORAGE_BILL_UNITS[bill],
         'bill_unit': _b['unit'],
-        'bill_rate': round(_b['rate'], 1 if bill == 'box' else 0),
+        'bill_rate': round(_b['rate'], 1 if bill in ('box', 'boxday') else 0),
         'bill_qty': round(_b['qty'], 1), 'bill_qty_label': _b['qty_label'],
         'avg_stock_plt': avg_stock, 'need_py': round(need_py, 1),
         'eff_plt_per_py': round(eff_plt_per_py, 2),
@@ -487,7 +498,7 @@ def compute(s, params, processes, region_rates, delivery, stages=None, customs=N
          'trace': in_trace, 'off_reason': '입고 공정 없음'},
         {'key': 'storage', 'name': '보관비', 'icon': 'bi-building',
          'enabled': storage['enabled'], 'unit': storage['bill_unit'],
-         'cost': storage['bill_rate'], 'price': round(_final(storage['bill_rate']), 1 if bill == 'box' else 0),
+         'cost': storage['bill_rate'], 'price': round(_final(storage['bill_rate']), 1 if bill in ('box', 'boxday') else 0),
          'cost_min': storage['bill_rate'], 'cost_max': storage['bill_rate'],
          'cpb': storage['cost_per_box'],
          'volume_label': storage['bill_qty_label'],

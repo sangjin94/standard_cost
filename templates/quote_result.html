@@ -201,6 +201,7 @@
   <select name="storage_bill" class="form-select form-select-sm mb-2">
     <option value="plt" {% if stage_conf[0].storage_bill == 'plt' %}selected{% endif %}>PLT당 (원/PLT·월)</option>
     <option value="box" {% if stage_conf[0].storage_bill == 'box' %}selected{% endif %}>박스당 (원/BOX)</option>
+    <option value="boxday" {% if stage_conf[0].storage_bill == 'boxday' %}selected{% endif %}>재고 박스·일당 (원/박스·일)</option>
     <option value="py"  {% if stage_conf[0].storage_bill == 'py'  %}selected{% endif %}>계약 평당 (원/평·월)</option>
     <option value="loc" {% if stage_conf[0].storage_bill == 'loc' %}selected{% endif %}>로케이션당 (원/셀·월)</option>
   </select>

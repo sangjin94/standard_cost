@@ -254,29 +254,33 @@ def parse_stock(df, pm, default_ppb):
     codes = [_cell(v) for v in df['code'].tolist()] if 'code' in df.columns else [None] * len(df)
 
     per_day = {}
+    box_days = 0.0          # 재고 박스·일 합 (박스·일당 청구 단위용, A17)
     unmatched_box = 0.0
     for i in range(len(df)):
         d = dates.iloc[i]
         if d is None:
             continue
         ds = str(d)
+        b = boxes.iloc[i]
+        bv = float(b) if (b is not None and not (isinstance(b, float) and math.isnan(b)) and b > 0) else 0.0
+        box_days += bv
         p = plts.iloc[i]
         if p is not None and not (isinstance(p, float) and math.isnan(p)) and p > 0:
             per_day[ds] = per_day.get(ds, 0.0) + float(p)
             continue
-        b = boxes.iloc[i]
-        if b is None or (isinstance(b, float) and math.isnan(b)) or b <= 0:
+        if bv <= 0:
             continue
         ppb = pm.get(codes[i]) if codes[i] else None
         if not ppb:
             ppb = default_ppb
-            unmatched_box += float(b)
-        per_day[ds] = per_day.get(ds, 0.0) + float(b) / ppb
+            unmatched_box += bv
+        per_day[ds] = per_day.get(ds, 0.0) + bv / ppb
 
     if not per_day:
         raise ValueError('유효한 재고 행이 없습니다.')
     avg_plt = sum(per_day.values()) / len(per_day)
     return {'days': len(per_day), 'avg_stock_plt': round(avg_plt, 1),
+            'box_days': round(box_days, 1),
             'daily': {k: round(v, 1) for k, v in sorted(per_day.items())},
             'unmatched_box': round(unmatched_box, 1)}
 
@@ -382,9 +386,18 @@ def summarize(profile, params):
     if stock:
         avg_stock_plt = stock['avg_stock_plt']
         stock_source = f"재고 스냅샷 {stock['days']}일 평균"
+        # 일평균 재고 박스 (박스·일 청구용). 구버전 프로파일엔 box_days가 없어 입수로 추정
+        if stock.get('box_days'):
+            avg_stock_box = stock['box_days'] / stock['days']
+            stock_box_src = '재고 파일 박스 집계'
+        else:
+            avg_stock_box = None
+            stock_box_src = None
     else:
         avg_stock_plt = avg_plt * params['stock_turn_days']          # A8
         stock_source = f"추정: 일평균 출고 {avg_plt:.1f}PLT × 회전일수 {params['stock_turn_days']:.0f}일 (A8)"
+        avg_stock_box = None
+        stock_box_src = None
 
     inbound = profile.get('inbound')
     if inbound:
@@ -429,6 +442,8 @@ def summarize(profile, params):
         'boxes_per_plt': round(boxes_per_plt, 1),
         'ppb_coverage': round(coverage * 100, 1),
         'avg_stock_plt': round(avg_stock_plt, 1),
+        'avg_stock_box': round(avg_stock_box, 1) if avg_stock_box is not None else round(avg_stock_plt * boxes_per_plt, 1),
+        'stock_box_src': stock_box_src or f'추정: 재고 {avg_stock_plt:.0f}PLT × 입수 {boxes_per_plt:.1f} (재고 파일 재업로드 시 실측)',
         'stock_source': stock_source,
         'in_plt_per_day': round(in_plt_per_day, 2),
         'in_box_per_day': round(in_box_per_day, 1),
